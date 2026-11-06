@@ -1,0 +1,6 @@
+{
+  "name": "SUN CBT - Sports University of Nigeria Examination System",
+  "description": "Professional Computer-Based Testing (CBT) portal for Sports University of Nigeria with student exam interfaces, lecturer dashboards, PDF question extraction, and automated results grading.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,23 @@
+# ==============================================================================
+# Render Blueprint Configuration (render.yaml)
+# Sports University of Nigeria (SUN) CBT Examination System
+# ==============================================================================
+# Docs: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: sun-cbt-system
+    runtime: node
+    plan: free
+    region: frankfurt # or oregon / ohio
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "22"
+      - key: GEMINI_API_KEY
+        sync: false # Set manually in Render dashboard from https://aistudio.google.com/app/apikey
+      - key: PORT
+        value: 10000

@@ -1,0 +1,193 @@
+{
+  "entities": {
+    "Exam": {
+      "title": "Exam",
+      "description": "An examination created and managed by a lecturer for SUN CBT.",
+      "type": "object",
+      "properties": {
+        "lecturerId": {
+          "type": "string",
+          "description": "The UID of the lecturer who created the exam."
+        },
+        "lecturerEmail": {
+          "type": "string",
+          "description": "The email address of the lecturer."
+        },
+        "courseCode": {
+          "type": "string",
+          "description": "The course code, e.g. SPT 101."
+        },
+        "courseTitle": {
+          "type": "string",
+          "description": "The official course title."
+        },
+        "department": {
+          "type": "string",
+          "description": "Academic department or All Departments."
+        },
+        "durationMinutes": {
+          "type": "number",
+          "description": "Duration allocated for the exam in minutes."
+        },
+        "startDate": {
+          "type": "string",
+          "description": "ISO start timestamp for exam availability window."
+        },
+        "endDate": {
+          "type": "string",
+          "description": "ISO end timestamp for exam availability window."
+        },
+        "instructions": {
+          "type": "string",
+          "description": "Examination instructions for candidates."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["draft", "published", "closed"],
+          "description": "Current publication status."
+        },
+        "questionsCount": {
+          "type": "number",
+          "description": "Total number of approved questions in the exam."
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": [
+        "lecturerId",
+        "lecturerEmail",
+        "courseCode",
+        "courseTitle",
+        "department",
+        "durationMinutes",
+        "startDate",
+        "endDate",
+        "status",
+        "questionsCount"
+      ]
+    },
+    "Submission": {
+      "title": "Submission",
+      "description": "A student examination submission evaluated securely.",
+      "type": "object",
+      "properties": {
+        "examId": {
+          "type": "string",
+          "description": "Reference ID of the exam."
+        },
+        "lecturerId": {
+          "type": "string",
+          "description": "The lecturer UID owning the exam."
+        },
+        "fullName": {
+          "type": "string",
+          "description": "Student full name."
+        },
+        "matricNumber": {
+          "type": "string",
+          "description": "Unique student matriculation number."
+        },
+        "department": {
+          "type": "string",
+          "description": "Student department."
+        },
+        "courseCode": {
+          "type": "string",
+          "description": "Exam course code."
+        },
+        "score": {
+          "type": "number",
+          "description": "Evaluated score."
+        },
+        "totalQuestions": {
+          "type": "number",
+          "description": "Total questions count."
+        },
+        "percentage": {
+          "type": "number",
+          "description": "Calculated percentage score."
+        },
+        "submittedAt": {
+          "type": "string",
+          "description": "Timestamp when the exam was submitted."
+        },
+        "submissionReceipt": {
+          "type": "string",
+          "description": "Unique verification receipt code."
+        }
+      },
+      "required": [
+        "examId",
+        "lecturerId",
+        "fullName",
+        "matricNumber",
+        "department",
+        "courseCode",
+        "score",
+        "totalQuestions",
+        "percentage",
+        "submittedAt",
+        "submissionReceipt"
+      ]
+    },
+    "ExamSession": {
+      "title": "ExamSession",
+      "description": "Live student examination session enforcing server-side timer and duplicate prevention.",
+      "type": "object",
+      "properties": {
+        "examId": {
+          "type": "string",
+          "description": "The examination ID."
+        },
+        "matricNumber": {
+          "type": "string",
+          "description": "Student matriculation number."
+        },
+        "startedAt": {
+          "type": "string",
+          "description": "ISO timestamp when the student started the exam."
+        },
+        "durationMinutes": {
+          "type": "number",
+          "description": "Allocated duration."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["in_progress", "submitted"],
+          "description": "Status of the student session."
+        }
+      },
+      "required": [
+        "examId",
+        "matricNumber",
+        "startedAt",
+        "durationMinutes",
+        "status"
+      ]
+    }
+  },
+  "firestore": {
+    "/exams/{examId}": {
+      "schema": "Exam",
+      "description": "Stores exam definitions and questions created by lecturers."
+    },
+    "/submissions/{submissionId}": {
+      "schema": "Submission",
+      "description": "Stores completed student submissions and automated marks."
+    },
+    "/exam_sessions/{sessionId}": {
+      "schema": "ExamSession",
+      "description": "Stores active student sessions for timer and duplicate checks."
+    },
+    "/test/{testId}": {
+      "schema": "ExamSession",
+      "description": "Health check document path used on boot by getDocFromServer."
+    }
+  }
+}

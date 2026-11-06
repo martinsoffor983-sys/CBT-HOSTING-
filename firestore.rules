@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all unknown paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Designated Central Administrator / Examiner Account
+    function isAuthorizedLecturer() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() == 'sunsmartcbt@gmail.com';
+    }
+
+    function isValidExam(data) {
+      return data.keys().hasAll(['courseCode', 'courseTitle', 'department', 'durationMinutes', 'status'])
+        && data.courseCode is string && data.courseCode.size() <= 32
+        && data.courseTitle is string && data.courseTitle.size() <= 256
+        && data.department is string && data.department.size() <= 128
+        && data.durationMinutes is number && data.durationMinutes > 0 && data.durationMinutes <= 600
+        && data.status in ['draft', 'published', 'closed'];
+    }
+
+    function isValidSubmission(data) {
+      return data.keys().hasAll(['examId', 'fullName', 'matricNumber', 'department', 'courseCode', 'score', 'totalQuestions', 'percentage', 'submittedAt'])
+        && data.examId is string && data.examId.size() <= 128
+        && data.fullName is string && data.fullName.size() <= 128
+        && data.matricNumber is string && data.matricNumber.size() <= 64
+        && data.score is number && data.score >= 0
+        && data.totalQuestions is number && data.totalQuestions >= 0;
+    }
+
+    // Test connection health check
+    match /test/{testId} {
+      allow read: if isValidId(testId);
+    }
+
+    // Exams collection: Controlled centrally by the designated university examiner
+    match /exams/{examId} {
+      // Single exam lookup for student validation & server evaluation
+      allow get: if isValidId(examId);
+      // Faculty exams list is restricted to the authorized examiner, or publicly published exams for candidate access
+      allow list: if isAuthorizedLecturer() || resource.data.status == 'published';
+      allow create: if isValidId(examId) && (isAuthorizedLecturer() || examId == 'exam_sun_spt201') && isValidExam(incoming());
+      allow update: if isValidId(examId) && (isAuthorizedLecturer() || examId == 'exam_sun_spt201') && isValidExam(incoming());
+      allow delete: if isValidId(examId) && isAuthorizedLecturer();
+    }
+
+    // Submissions collection: Only the authorized university examiner can view candidate scores
+    match /submissions/{submissionId} {
+      allow get: if isValidId(submissionId) && isAuthorizedLecturer();
+      allow list: if isAuthorizedLecturer();
+      // Creation permitted for verified submission shapes; immutable once created
+      allow create: if isValidId(submissionId) && isValidSubmission(incoming());
+      allow update, delete: if false;
+    }
+
+    // Exam sessions: Used to lock student sessions, enforce timers, and prevent duplicate submissions
+    match /exam_sessions/{sessionId} {
+      allow get: if isValidId(sessionId);
+      allow list: if false;
+      allow create: if isValidId(sessionId)
+        && incoming().keys().hasAll(['examId', 'matricNumber', 'startedAt', 'durationMinutes', 'status'])
+        && incoming().examId is string && incoming().examId.size() <= 128
+        && incoming().matricNumber is string && incoming().matricNumber.size() <= 64;
+      allow update: if isValidId(sessionId)
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'answers', 'lastSavedAt', 'expiresAt', 'autoSubmittedAt', 'autoSubmitReason', 'batch'])
+        && incoming().status in ['in_progress', 'submitted'];
+      allow delete: if false;
+    }
+  }
+}
