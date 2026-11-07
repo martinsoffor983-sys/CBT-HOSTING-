@@ -581,7 +581,7 @@ app.get('/api/exam-public/:examId', async (req: Request, res: Response): Promise
 // 3. Start Exam & Verify Duplicate Matric Number
 app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { examId, fullName, matricNumber, department } = req.body;
+    const { examId, fullName, matricNumber, department, gender } = req.body;
 
     if (!examId || !fullName || !matricNumber || !department) {
       res.status(400).json({ error: 'Please provide all required student details (Full Name, Department, Matriculation Number).' });
@@ -590,6 +590,14 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
 
     const cleanExamId = (examId || '').trim();
     const normalizedMatric = matricNumber.trim().toUpperCase();
+    const cleanGender = (g: any): string => {
+      if (!g) return 'Not recorded';
+      const s = String(g).trim().toUpperCase();
+      if (s === 'M' || s === 'MALE') return 'M';
+      if (s === 'F' || s === 'FEMALE') return 'F';
+      return 'Not recorded';
+    };
+    const resolvedGender = cleanGender(gender);
 
     // 1. Fetch exam
     const examDoc = await getDoc(doc(db, 'exams', cleanExamId));
@@ -640,6 +648,7 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
     let startedAtIso: string;
     let remainingSeconds: number;
     let assignedBatch = 'Batch A';
+    let sessionGender = resolvedGender;
 
     const batchList = ['Batch A', 'Batch B', 'Batch C', 'Batch D'];
 
@@ -647,6 +656,7 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
       const sessionData = sessionSnap.data();
       startedAtIso = sessionData.startedAt;
       assignedBatch = sessionData.batch || 'Batch A';
+      sessionGender = sessionData.gender || resolvedGender;
       const startedAtMs = new Date(startedAtIso).getTime();
 
       // Rule 3: The official closing time must strictly take priority over the individual timer
@@ -663,6 +673,7 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
           matricNumber: normalizedMatric,
           fullName: fullName.trim(),
           department,
+          gender: sessionGender,
           startedAtIso,
           durationMinutes,
           closingTimeIso: examData.endDate || null,
@@ -711,6 +722,7 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
         matricNumber: normalizedMatric,
         fullName: fullName.trim(),
         department,
+        gender: sessionGender,
         startedAt: startedAtIso,
         durationMinutes,
         closingTimeIso: examData.endDate || null,
@@ -727,6 +739,7 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
       matricNumber: normalizedMatric,
       fullName: fullName.trim(),
       department,
+      gender: sessionGender,
       startedAtIso,
       durationMinutes,
       closingTimeIso: examData.endDate || null,
@@ -833,6 +846,7 @@ app.post('/api/save-progress', async (req: Request, res: Response): Promise<void
           matricNumber: data.matricNumber,
           fullName: data.fullName,
           department: data.department,
+          gender: data.gender || 'Not recorded',
           startedAtIso: data.startedAt,
           durationMinutes: data.durationMinutes,
           closingTimeIso,
@@ -926,6 +940,7 @@ app.get('/api/session-time/:sessionId', async (req: Request, res: Response): Pro
         matricNumber: data.matricNumber,
         fullName: data.fullName,
         department: data.department,
+        gender: data.gender || 'Not recorded',
         startedAtIso: data.startedAt,
         durationMinutes: data.durationMinutes,
         closingTimeIso,
@@ -980,6 +995,7 @@ app.post('/api/auto-submit', async (req: Request, res: Response): Promise<void> 
           matricNumber: data.matricNumber,
           fullName: data.fullName,
           department: data.department,
+          gender: data.gender || 'Not recorded',
           startedAtIso: data.startedAt,
           durationMinutes: data.durationMinutes,
           closingTimeIso,
@@ -1010,7 +1026,7 @@ app.post('/api/auto-submit', async (req: Request, res: Response): Promise<void> 
 // 4. Submit Exam & Automated Server-Side Grading
 app.post('/api/submit-exam', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { examId, sessionId, fullName, matricNumber, department, answers = {} } = req.body;
+    const { examId, sessionId, fullName, matricNumber, department, gender, answers = {} } = req.body;
 
     if (!examId || !matricNumber || !fullName || !department) {
       res.status(400).json({ error: 'Missing candidate details for examination submission.' });
@@ -1052,6 +1068,12 @@ app.post('/api/submit-exam', async (req: Request, res: Response): Promise<void> 
     const submissionId = `sub_${examId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}_${Date.now()}`;
     const submissionReceipt = `SUN-CBT-${Math.random().toString(36).substring(2, 7).toUpperCase()}-${Date.now().toString().slice(-4)}`;
     const submittedAt = new Date().toISOString();
+    const rawGender = gender || (sessionSnap.exists() && sessionSnap.data()?.gender);
+    const resolvedGender = (rawGender === 'M' || String(rawGender).trim().toUpperCase() === 'M' || String(rawGender).trim().toUpperCase() === 'MALE')
+      ? 'M'
+      : (rawGender === 'F' || String(rawGender).trim().toUpperCase() === 'F' || String(rawGender).trim().toUpperCase() === 'FEMALE')
+      ? 'F'
+      : 'Not recorded';
 
     // 4. Store submission securely in Firestore
     await setDoc(doc(db, 'submissions', submissionId), {
@@ -1060,6 +1082,7 @@ app.post('/api/submit-exam', async (req: Request, res: Response): Promise<void> 
       fullName: fullName.trim(),
       matricNumber: normalizedMatric,
       department,
+      gender: resolvedGender,
       courseCode: examData.courseCode,
       courseTitle: examData.courseTitle,
       score,

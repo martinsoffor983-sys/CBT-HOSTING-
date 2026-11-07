@@ -97,6 +97,10 @@
           "type": "string",
           "description": "Student department."
         },
+        "gender": {
+          "type": "string",
+          "description": "Student gender (M or F)."
+        },
         "courseCode": {
           "type": "string",
           "description": "Exam course code."
@@ -148,6 +152,10 @@
         "matricNumber": {
           "type": "string",
           "description": "Student matriculation number."
+        },
+        "gender": {
+          "type": "string",
+          "description": "Student gender (M or F)."
         },
         "startedAt": {
           "type": "string",

@@ -7,6 +7,7 @@ export interface ActiveSessionTracker {
   matricNumber: string;
   fullName: string;
   department: string;
+  gender?: string;
   startedAt: number; // epoch ms
   durationMinutes: number;
   individualExpiresAt: number; // epoch ms from duration
@@ -38,6 +39,7 @@ export class TimerEnforcementManager {
     matricNumber: string;
     fullName: string;
     department: string;
+    gender?: string;
     startedAtIso: string;
     durationMinutes: number;
     closingTimeIso?: string | null;
@@ -63,12 +65,21 @@ export class TimerEnforcementManager {
         ? Math.min(individualExpiresAt, closingTimeMs)
         : individualExpiresAt;
 
+    const cleanGender = (g: any): string => {
+      if (!g) return 'Not recorded';
+      const s = String(g).trim().toUpperCase();
+      if (s === 'M' || s === 'MALE') return 'M';
+      if (s === 'F' || s === 'FEMALE') return 'F';
+      return 'Not recorded';
+    };
+
     const tracker: ActiveSessionTracker = {
       sessionId: sessionData.sessionId,
       examId: sessionData.examId,
       matricNumber: sessionData.matricNumber,
       fullName: sessionData.fullName,
       department: sessionData.department,
+      gender: cleanGender(sessionData.gender),
       startedAt,
       durationMinutes: sessionData.durationMinutes,
       individualExpiresAt,
@@ -211,6 +222,11 @@ export class TimerEnforcementManager {
         fullName: session.fullName,
         matricNumber: session.matricNumber,
         department: session.department,
+        gender: (session.gender === 'M' || String(session.gender).trim().toUpperCase() === 'M' || String(session.gender).trim().toUpperCase() === 'MALE')
+          ? 'M'
+          : (session.gender === 'F' || String(session.gender).trim().toUpperCase() === 'F' || String(session.gender).trim().toUpperCase() === 'FEMALE')
+          ? 'F'
+          : 'Not recorded',
         courseCode: examData.courseCode || session.courseCode || '',
         courseTitle: examData.courseTitle || session.courseTitle || '',
         score,

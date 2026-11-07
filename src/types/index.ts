@@ -55,6 +55,7 @@ export interface StudentInfo {
   fullName: string;
   department: string;
   matricNumber: string;
+  gender?: 'M' | 'F' | string;
 }
 
 export interface Submission {
@@ -64,6 +65,7 @@ export interface Submission {
   fullName: string;
   matricNumber: string;
   department: string;
+  gender?: string;
   courseCode: string;
   courseTitle?: string;
   score: number;

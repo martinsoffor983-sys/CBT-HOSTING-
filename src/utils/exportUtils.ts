@@ -28,11 +28,19 @@ function getGrade(percentage: number): { grade: string; remark: string } {
 export function exportToExcel(exam: Exam, submissions: Submission[]) {
   const data = submissions.map((sub, index) => {
     const { grade, remark } = getGrade(sub.percentage);
+    const sexValue =
+      sub.gender === 'M' || sub.gender === 'Male'
+        ? 'M'
+        : sub.gender === 'F' || sub.gender === 'Female'
+        ? 'F'
+        : 'Not recorded';
+
     return {
       'S/N': index + 1,
       'Matriculation Number': sub.matricNumber,
       'Full Name': sub.fullName,
       'Department': sub.department,
+      'Sex': sexValue,
       'Course Code': exam.courseCode,
       'Course Title': exam.courseTitle,
       'Score': sub.score,
@@ -54,6 +62,7 @@ export function exportToExcel(exam: Exam, submissions: Submission[]) {
     { wch: 22 }, // Matric
     { wch: 30 }, // Name
     { wch: 30 }, // Dept
+    { wch: 14 }, // Sex
     { wch: 14 }, // Code
     { wch: 30 }, // Title
     { wch: 8 },  // Score
@@ -107,22 +116,27 @@ export async function exportToWord(exam: Exam, submissions: Submission[]) {
       new TableCell({
         shading: { fill: '0B532C' },
         children: [new Paragraph({ children: [new TextRun({ text: 'S/N', bold: true, color: 'FFFFFF' })] })],
-        width: { size: 6, type: WidthType.PERCENTAGE }
+        width: { size: 5, type: WidthType.PERCENTAGE }
       }),
       new TableCell({
         shading: { fill: '0B532C' },
         children: [new Paragraph({ children: [new TextRun({ text: 'Matric No.', bold: true, color: 'FFFFFF' })] })],
-        width: { size: 20, type: WidthType.PERCENTAGE }
+        width: { size: 18, type: WidthType.PERCENTAGE }
       }),
       new TableCell({
         shading: { fill: '0B532C' },
         children: [new Paragraph({ children: [new TextRun({ text: 'Student Name', bold: true, color: 'FFFFFF' })] })],
-        width: { size: 28, type: WidthType.PERCENTAGE }
+        width: { size: 25, type: WidthType.PERCENTAGE }
       }),
       new TableCell({
         shading: { fill: '0B532C' },
         children: [new Paragraph({ children: [new TextRun({ text: 'Department', bold: true, color: 'FFFFFF' })] })],
-        width: { size: 24, type: WidthType.PERCENTAGE }
+        width: { size: 20, type: WidthType.PERCENTAGE }
+      }),
+      new TableCell({
+        shading: { fill: '0B532C' },
+        children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'Sex', bold: true, color: 'FFFFFF' })] })],
+        width: { size: 10, type: WidthType.PERCENTAGE }
       }),
       new TableCell({
         shading: { fill: '0B532C' },
@@ -164,6 +178,20 @@ export async function exportToWord(exam: Exam, submissions: Submission[]) {
         new TableCell({
           shading: { fill: bg },
           children: [new Paragraph({ text: sub.department })]
+        }),
+        new TableCell({
+          shading: { fill: bg },
+          children: [
+            new Paragraph({
+              alignment: AlignmentType.CENTER,
+              text:
+                sub.gender === 'M' || sub.gender === 'Male'
+                  ? 'M'
+                  : sub.gender === 'F' || sub.gender === 'Female'
+                  ? 'F'
+                  : 'Not recorded'
+            })
+          ]
         }),
         new TableCell({
           shading: { fill: bg },

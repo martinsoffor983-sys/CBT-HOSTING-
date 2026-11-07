@@ -22,7 +22,8 @@ import {
   Check,
   Sparkles,
   Award,
-  BarChart3
+  BarChart3,
+  UserCheck
 } from 'lucide-react';
 import { PublicExam, SanitizedQuestion, StudentInfo } from '../../types';
 import { formatLagosDateTime, formatLagosTime, parseLagosExamTime } from '../../utils/timeUtils';
@@ -46,11 +47,11 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const [loadingExam, setLoadingExam] = useState(false);
   const [examError, setExamError] = useState<string | null>(null);
 
-  // Student details
   const [studentInfo, setStudentInfo] = useState<StudentInfo>({
     fullName: '',
     department: '',
-    matricNumber: ''
+    matricNumber: '',
+    gender: ''
   });
 
   // Active Exam Session Data
@@ -377,7 +378,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           examId: exam.id,
           fullName: studentInfo.fullName,
           matricNumber: studentInfo.matricNumber,
-          department: studentInfo.department
+          department: studentInfo.department,
+          gender: studentInfo.gender
         })
       });
 
@@ -478,6 +480,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           fullName: studentInfo.fullName,
           matricNumber: studentInfo.matricNumber,
           department: studentInfo.department,
+          gender: studentInfo.gender,
           answers
         })
       });
@@ -739,8 +742,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (!studentInfo.fullName.trim() || !studentInfo.matricNumber.trim() || !studentInfo.department.trim()) {
-                  setExamError('Please fill in all compulsory fields including your department.');
+                if (
+                  !studentInfo.fullName.trim() ||
+                  !studentInfo.matricNumber.trim() ||
+                  !studentInfo.department.trim() ||
+                  !studentInfo.gender
+                ) {
+                  setExamError('Please fill in all compulsory fields including your gender (M/F).');
                   return;
                 }
                 setLoadingExam(true);
@@ -828,6 +836,76 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1.5 flex items-center gap-1.5">
+                  <UserCheck className="w-3.5 h-3.5 text-[#789981]" />
+                  Gender <span className="text-[#D6BF62]">*</span>
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label
+                    onClick={() => setStudentInfo({ ...studentInfo, gender: 'M' })}
+                    className={`flex items-center justify-center gap-2.5 py-2.5 px-4 rounded-xl text-xs font-bold border cursor-pointer transition select-none ${
+                      studentInfo.gender === 'M'
+                        ? 'bg-[#0E623B] border-[#D6BF62] text-[#F0F9F3] shadow-md shadow-[#0E623B]/30'
+                        : 'bg-[#0A2419] border-[#789981]/40 text-[#ADCDBA] hover:border-[#D6BF62]/50 hover:text-[#F0F9F3]'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="gender"
+                      value="M"
+                      checked={studentInfo.gender === 'M'}
+                      onChange={() => setStudentInfo({ ...studentInfo, gender: 'M' })}
+                      className="sr-only"
+                      required
+                    />
+                    <span
+                      className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                        studentInfo.gender === 'M'
+                          ? 'border-[#D6BF62] bg-[#D6BF62]'
+                          : 'border-[#789981]'
+                      }`}
+                    >
+                      {studentInfo.gender === 'M' && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#061C13]" />
+                      )}
+                    </span>
+                    <span className="font-bold">M</span>
+                  </label>
+
+                  <label
+                    onClick={() => setStudentInfo({ ...studentInfo, gender: 'F' })}
+                    className={`flex items-center justify-center gap-2.5 py-2.5 px-4 rounded-xl text-xs font-bold border cursor-pointer transition select-none ${
+                      studentInfo.gender === 'F'
+                        ? 'bg-[#0E623B] border-[#D6BF62] text-[#F0F9F3] shadow-md shadow-[#0E623B]/30'
+                        : 'bg-[#0A2419] border-[#789981]/40 text-[#ADCDBA] hover:border-[#D6BF62]/50 hover:text-[#F0F9F3]'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="gender"
+                      value="F"
+                      checked={studentInfo.gender === 'F'}
+                      onChange={() => setStudentInfo({ ...studentInfo, gender: 'F' })}
+                      className="sr-only"
+                      required
+                    />
+                    <span
+                      className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center ${
+                        studentInfo.gender === 'F'
+                          ? 'border-[#D6BF62] bg-[#D6BF62]'
+                          : 'border-[#789981]'
+                      }`}
+                    >
+                      {studentInfo.gender === 'F' && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#061C13]" />
+                      )}
+                    </span>
+                    <span className="font-bold">F</span>
+                  </label>
+                </div>
+              </div>
+
               <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"
@@ -892,9 +970,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 <span className="text-[#789981] font-semibold uppercase text-[10px]">Matriculation No.</span>
                 <p className="font-mono font-bold text-[#D6BF62] text-sm mt-0.5">{studentInfo.matricNumber}</p>
               </div>
-              <div className="col-span-2 pt-2 border-t border-[#789981]/20">
+              <div className="pt-2 border-t border-[#789981]/20">
                 <span className="text-[#789981] font-semibold uppercase text-[10px]">Department</span>
                 <p className="font-medium text-[#ADCDBA]">{studentInfo.department}</p>
+              </div>
+              <div className="pt-2 border-t border-[#789981]/20">
+                <span className="text-[#789981] font-semibold uppercase text-[10px]">Gender</span>
+                <p className="font-bold text-[#D6BF62]">{studentInfo.gender || 'Not specified'}</p>
               </div>
             </div>
 

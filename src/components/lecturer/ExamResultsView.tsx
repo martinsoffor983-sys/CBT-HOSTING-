@@ -70,7 +70,8 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
       const matchesSearch =
         sub.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         sub.matricNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        sub.submissionReceipt.toLowerCase().includes(searchQuery.toLowerCase());
+        sub.submissionReceipt.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (sub.gender && sub.gender.toLowerCase().includes(searchQuery.toLowerCase()));
 
       const matchesDept =
         selectedDepartment === 'All' || sub.department === selectedDepartment;
@@ -326,6 +327,7 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
                   <th className="py-3.5 px-4">Matriculation No.</th>
                   <th className="py-3.5 px-4">Student Name</th>
                   <th className="py-3.5 px-4">Department</th>
+                  <th className="py-3.5 px-4 text-center">Sex</th>
                   <th className="py-3.5 px-4 text-center">Batch</th>
                   <th className="py-3.5 px-4 text-center">Score</th>
                   <th className="py-3.5 px-4 text-center">Percentage</th>
@@ -344,6 +346,23 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
                       </td>
                       <td className="py-3.5 px-4 font-semibold text-[#F0F9F3]">{sub.fullName}</td>
                       <td className="py-3.5 px-4 text-[#ADCDBA]">{sub.department}</td>
+                      <td className="py-3.5 px-4 text-center">
+                        <span
+                          className={`inline-block px-2.5 py-0.5 rounded text-xs font-bold font-mono ${
+                            sub.gender === 'M' || sub.gender === 'Male'
+                              ? 'bg-[#0E623B]/50 text-[#10B981] border border-[#10B981]/40'
+                              : sub.gender === 'F' || sub.gender === 'Female'
+                              ? 'bg-[#0A2419] text-[#D6BF62] border border-[#D6BF62]/40'
+                              : 'text-[#789981] font-sans font-normal'
+                          }`}
+                        >
+                          {sub.gender === 'M' || sub.gender === 'Male'
+                            ? 'M'
+                            : sub.gender === 'F' || sub.gender === 'Female'
+                            ? 'F'
+                            : 'Not recorded'}
+                        </span>
+                      </td>
                       <td className="py-3.5 px-4 text-center">
                         <span className="px-2 py-0.5 rounded bg-[#030515] text-[#D6BF62] border border-[#789981]/30 text-[10px] font-bold">
                           {sub.batch || 'Batch A'}
