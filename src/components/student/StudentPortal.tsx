@@ -26,7 +26,8 @@ import {
   UserCheck
 } from 'lucide-react';
 import { PublicExam, SanitizedQuestion, StudentInfo } from '../../types';
-import { formatLagosDateTime, formatLagosTime, parseLagosExamTime } from '../../utils/timeUtils';
+import { formatLagosDateTime, formatLagosTime, formatLagosDate, parseLagosExamTime } from '../../utils/timeUtils';
+import { validateMatricNumber, capitalizeProper, normalizeStudentData } from '../../utils/studentValidation';
 
 interface StudentPortalProps {
   initialExamId?: string | null;
@@ -53,6 +54,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     matricNumber: '',
     gender: ''
   });
+  const [matricLiveMsg, setMatricLiveMsg] = useState<{ text: string; isError: boolean } | null>(null);
 
   // Active Exam Session Data
   const [sessionId, setSessionId] = useState<string>('');
@@ -76,6 +78,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     matricNumber: string;
     courseCode: string;
     courseTitle: string;
+    lecturerName?: string;
     totalQuestions: number;
   } | null>(null);
 
@@ -169,22 +172,30 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
         setCurrentQIndex((prev) => Math.min(questions.length - 1, prev + 1));
       } else if (e.key === 'ArrowLeft' || e.key === 'p') {
         setCurrentQIndex((prev) => Math.max(0, prev - 1));
-      } else if (['1', 'a', 'A'].includes(e.key)) {
-        const next = { ...answers, [currentQuestion.id]: 0 };
-        setAnswers(next);
-        saveProgressToServer(next);
-      } else if (['2', 'b', 'B'].includes(e.key)) {
-        const next = { ...answers, [currentQuestion.id]: 1 };
-        setAnswers(next);
-        saveProgressToServer(next);
+      } else if (['1', 'a', 'A', 't', 'T'].includes(e.key)) {
+        if (currentQuestion.options && currentQuestion.options[0]) {
+          const next = { ...answers, [currentQuestion.id]: 0 };
+          setAnswers(next);
+          saveProgressToServer(next);
+        }
+      } else if (['2', 'b', 'B', 'f', 'F'].includes(e.key)) {
+        if (currentQuestion.options && currentQuestion.options[1]) {
+          const next = { ...answers, [currentQuestion.id]: 1 };
+          setAnswers(next);
+          saveProgressToServer(next);
+        }
       } else if (['3', 'c', 'C'].includes(e.key)) {
-        const next = { ...answers, [currentQuestion.id]: 2 };
-        setAnswers(next);
-        saveProgressToServer(next);
+        if (currentQuestion.options && currentQuestion.options[2]) {
+          const next = { ...answers, [currentQuestion.id]: 2 };
+          setAnswers(next);
+          saveProgressToServer(next);
+        }
       } else if (['4', 'd', 'D'].includes(e.key)) {
-        const next = { ...answers, [currentQuestion.id]: 3 };
-        setAnswers(next);
-        saveProgressToServer(next);
+        if (currentQuestion.options && currentQuestion.options[3]) {
+          const next = { ...answers, [currentQuestion.id]: 3 };
+          setAnswers(next);
+          saveProgressToServer(next);
+        }
       }
     };
 
@@ -330,6 +341,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             matricNumber: data.matricNumber || studentInfo.matricNumber,
             courseCode: data.courseCode || exam.courseCode,
             courseTitle: data.courseTitle || exam.courseTitle,
+            lecturerName: data.lecturerName || exam.lecturerName || 'Not specified',
             totalQuestions: data.totalQuestions || questions.length
           });
         }
@@ -450,6 +462,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           matricNumber: data.matricNumber || studentInfo.matricNumber,
           courseCode: data.courseCode || exam.courseCode,
           courseTitle: data.courseTitle || exam.courseTitle,
+          lecturerName: data.lecturerName || exam.lecturerName || 'Not specified',
           totalQuestions: data.totalQuestions || questions.length
         });
         setStep('submitted');
@@ -502,6 +515,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
         matricNumber: data.matricNumber,
         courseCode: data.courseCode,
         courseTitle: data.courseTitle,
+        lecturerName: data.lecturerName || exam.lecturerName || 'Not specified',
         totalQuestions: data.totalQuestions
       });
 
@@ -652,9 +666,12 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                         <p className="text-xs font-bold text-[#F0F9F3] mt-1 line-clamp-1 group-hover:text-[#D6BF62] transition">
                           {pubExam.courseTitle}
                         </p>
+                        <p className="text-[10px] text-[#ADCDBA] mt-0.5">
+                          Lecturer: <strong className="text-[#D6BF62]">{pubExam.lecturerName || 'Not specified'}</strong>
+                        </p>
                         <p className="text-[10px] text-[#789981] mt-0.5">
                           {pubExam.durationMinutes} Mins • {pubExam.questionsCount} Questions
-                          {pubExam.endDate ? ` • Closes ${formatLagosTime(pubExam.endDate)} (WAT)` : ''}
+                          {pubExam.startDate && pubExam.endDate ? ` • ${formatLagosDate(pubExam.startDate)} (${formatLagosTime(pubExam.startDate)} – ${formatLagosTime(pubExam.endDate)})` : ''}
                         </p>
                       </div>
 
@@ -751,6 +768,26 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   setExamError('Please fill in all compulsory fields including your gender (M/F).');
                   return;
                 }
+
+                // Strict Matriculation Number Validation (Format 1: 10 digits; Format 2: DE + 10 digits)
+                const matricCheck = validateMatricNumber(studentInfo.matricNumber);
+                if (!matricCheck.isValid) {
+                  setExamError(matricCheck.error || 'Invalid Matriculation Number format.');
+                  setMatricLiveMsg({ text: matricCheck.error || 'Invalid Matriculation Number format.', isError: true });
+                  return;
+                }
+
+                // Automatic Capitalization & Normalization of student details
+                const normalizedFullName = capitalizeProper(studentInfo.fullName);
+                const normalizedDepartment = capitalizeProper(studentInfo.department);
+                const normalizedInfo = {
+                  ...studentInfo,
+                  fullName: normalizedFullName,
+                  matricNumber: matricCheck.normalized,
+                  department: normalizedDepartment
+                };
+                setStudentInfo(normalizedInfo);
+
                 setLoadingExam(true);
                 setExamError(null);
                 try {
@@ -759,7 +796,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                       examId: exam?.id,
-                      matricNumber: studentInfo.matricNumber
+                      matricNumber: matricCheck.normalized,
+                      fullName: normalizedFullName,
+                      department: normalizedDepartment,
+                      gender: studentInfo.gender
                     })
                   });
                   const vData = await vRes.json();
@@ -775,20 +815,66 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               }}
               className="space-y-4"
             >
-              {/* Course Information Display Fields */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 bg-[#0A2419] rounded-2xl border border-[#789981]/30">
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                    Course Code
-                  </label>
-                  <p className="text-sm font-black font-mono text-[#D6BF62]">{exam?.courseCode}</p>
+              {/* Course Information & Publication Details Display Fields */}
+              <div className="p-4 bg-[#0A2419] rounded-2xl border border-[#789981]/30 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
+                      Course Code
+                    </label>
+                    <p className="text-sm font-black font-mono text-[#D6BF62]">{exam?.courseCode}</p>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
+                      Course Title
+                    </label>
+                    <p className="text-xs font-bold text-[#F0F9F3] line-clamp-2">{exam?.courseTitle}</p>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                    Course Title
-                  </label>
-                  <p className="text-xs font-bold text-[#F0F9F3] line-clamp-2">{exam?.courseTitle}</p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[#789981]/20 text-xs">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
+                      Course Lecturer
+                    </label>
+                    <p className="text-xs font-bold text-[#D6BF62]">{exam?.lecturerName || 'Not specified'}</p>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
+                      Department
+                    </label>
+                    <p className="text-xs font-medium text-[#ADCDBA]">{exam?.department}</p>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
+                      Duration
+                    </label>
+                    <p className="text-xs font-bold text-[#F0F9F3]">{exam?.durationMinutes} Minutes</p>
+                  </div>
                 </div>
+
+                {exam?.startDate && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[#789981]/20 text-xs">
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
+                        Examination Date
+                      </label>
+                      <p className="text-xs font-bold text-[#F0F9F3]">{formatLagosDate(exam.startDate)}</p>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
+                        Starting Time
+                      </label>
+                      <p className="text-xs font-bold text-[#10B981]">{formatLagosTime(exam.startDate)} (WAT)</p>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
+                        Closing Time
+                      </label>
+                      <p className="text-xs font-bold text-amber-400">{formatLagosTime(exam.endDate)} (WAT)</p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -799,39 +885,153 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Ebuka Emmanuel Okafor"
+                  placeholder="e.g. John Doe"
                   value={studentInfo.fullName}
                   onChange={(e) => setStudentInfo({ ...studentInfo, fullName: e.target.value })}
+                  onBlur={(e) => setStudentInfo({ ...studentInfo, fullName: capitalizeProper(e.target.value) })}
                   className="w-full px-4 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-medium text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62] transition"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1.5 flex items-center gap-1.5">
-                  <Hash className="w-3.5 h-3.5 text-[#789981]" />
-                  Matriculation Number <span className="text-[#D6BF62]">*</span>
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] flex items-center gap-1.5">
+                    <Hash className="w-3.5 h-3.5 text-[#789981]" />
+                    Matriculation Number <span className="text-[#D6BF62]">*</span>
+                  </label>
+                  {studentInfo.matricNumber.trim() && (
+                    <span className="text-[10px] font-mono text-[#789981]">
+                      {studentInfo.matricNumber.length} chars
+                    </span>
+                  )}
+                </div>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. SUN/2023/1042"
+                  placeholder="e.g. 2026201120 or DE2026201120"
                   value={studentInfo.matricNumber}
-                  onChange={(e) => setStudentInfo({ ...studentInfo, matricNumber: e.target.value.toUpperCase() })}
-                  className="w-full px-4 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-mono font-bold text-[#D6BF62] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62] transition"
+                  onChange={(e) => {
+                    const upper = e.target.value.toUpperCase();
+                    setStudentInfo(prev => ({ ...prev, matricNumber: upper }));
+
+                    if (!upper.trim()) {
+                      setMatricLiveMsg(null);
+                      setExamError(null);
+                      return;
+                    }
+
+                    if (/\s/.test(upper)) {
+                      setMatricLiveMsg({ text: 'Matriculation number must not contain spaces.', isError: true });
+                      return;
+                    }
+
+                    if (/-/.test(upper)) {
+                      setMatricLiveMsg({ text: 'Matriculation number must not contain hyphens.', isError: true });
+                      return;
+                    }
+
+                    if (/[^A-Z0-9]/.test(upper)) {
+                      setMatricLiveMsg({ text: 'Symbols, slashes and special characters are not permitted.', isError: true });
+                      return;
+                    }
+
+                    if (/^[A-Z]/.test(upper)) {
+                      if (!upper.startsWith('DE')) {
+                        setMatricLiveMsg({ text: "Unsupported prefix. Only 'DE' (Direct Entry) is accepted as an alphabetic prefix.", isError: true });
+                        return;
+                      }
+                      const digits = upper.substring(2);
+                      if (digits && !/^\d+$/.test(digits)) {
+                        setMatricLiveMsg({ text: "'DE' must be followed by numeric digits only.", isError: true });
+                        return;
+                      }
+                      if (digits.length > 10) {
+                        setMatricLiveMsg({ text: `Too long: Format 2 requires DE followed by exactly 10 digits (currently ${digits.length}).`, isError: true });
+                        return;
+                      }
+                      if (digits.length === 10) {
+                        setMatricLiveMsg({ text: '✓ Format 2 accepted (Direct Entry DE + 10 digits)', isError: false });
+                        setExamError(null);
+                        return;
+                      }
+                      setMatricLiveMsg({ text: `Format 2 (Direct Entry): Requires 10 digits after DE (currently ${digits.length}/10).`, isError: true });
+                      return;
+                    }
+
+                    if (/^\d+$/.test(upper)) {
+                      if (upper.length > 10) {
+                        setMatricLiveMsg({ text: `Too long: Format 1 requires exactly 10 digits (currently ${upper.length}).`, isError: true });
+                        return;
+                      }
+                      if (upper.length === 10) {
+                        setMatricLiveMsg({ text: '✓ Format 1 accepted (10 numeric digits)', isError: false });
+                        setExamError(null);
+                        return;
+                      }
+                      setMatricLiveMsg({ text: `Format 1: Requires exactly 10 digits (currently ${upper.length}/10).`, isError: true });
+                      return;
+                    }
+
+                    const check = validateMatricNumber(upper);
+                    if (!check.isValid) {
+                      setMatricLiveMsg({ text: check.error || 'Invalid matriculation format.', isError: true });
+                    } else {
+                      setMatricLiveMsg({ text: `✓ ${check.format} accepted`, isError: false });
+                      setExamError(null);
+                    }
+                  }}
+                  onBlur={() => {
+                    if (studentInfo.matricNumber.trim()) {
+                      const v = validateMatricNumber(studentInfo.matricNumber);
+                      if (!v.isValid) {
+                        setMatricLiveMsg({ text: v.error || 'Invalid matriculation format.', isError: true });
+                        setExamError(v.error || 'Invalid matriculation number format.');
+                      } else {
+                        setMatricLiveMsg({ text: `✓ ${v.format} accepted`, isError: false });
+                        setExamError(null);
+                        setStudentInfo(prev => ({ ...prev, matricNumber: v.normalized }));
+                      }
+                    }
+                  }}
+                  className={`w-full px-4 py-2.5 bg-[#0A2419] border rounded-xl text-sm font-mono font-bold text-[#D6BF62] placeholder-[#789981]/70 focus:outline-none transition ${
+                    matricLiveMsg?.isError
+                      ? 'border-red-500/60 focus:border-red-400 focus:ring-1 focus:ring-red-400'
+                      : matricLiveMsg && !matricLiveMsg.isError
+                      ? 'border-emerald-500/60 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400'
+                      : 'border-[#789981]/40 focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]'
+                  }`}
                 />
+
+                {matricLiveMsg && (
+                  <p className={`text-[11px] font-semibold mt-1.5 flex items-center gap-1.5 ${
+                    matricLiveMsg.isError ? 'text-red-400' : 'text-emerald-400'
+                  }`}>
+                    {matricLiveMsg.isError ? (
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    )}
+                    <span>{matricLiveMsg.text}</span>
+                  </p>
+                )}
+
+                <p className="text-[10px] text-[#789981] mt-1">
+                  Accepted formats: 10 digits (Format 1: e.g. 2026201120) or Direct Entry DE + 10 digits (Format 2: e.g. DE2026201120).
+                </p>
               </div>
 
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1.5 flex items-center gap-1.5">
                   <Building className="w-3.5 h-3.5 text-[#789981]" />
-                  DEPARTMENT <span className="text-[#D6BF62]">*</span>
+                  Department <span className="text-[#D6BF62]">*</span>
                 </label>
                 <input
                   type="text"
                   required
-                  placeholder="Enter your department name."
+                  placeholder="e.g. Anatomy or Nursing"
                   value={studentInfo.department}
                   onChange={(e) => setStudentInfo({ ...studentInfo, department: e.target.value })}
+                  onBlur={(e) => setStudentInfo({ ...studentInfo, department: capitalizeProper(e.target.value) })}
                   className="w-full px-4 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-medium text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62] transition"
                 />
               </div>
@@ -917,8 +1117,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
                 <button
                   type="submit"
-                  disabled={loadingExam}
-                  className="flex-1 py-3 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-bold rounded-xl text-sm shadow-lg hover:shadow-[#0E623B]/30 transition flex items-center justify-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50"
+                  disabled={loadingExam || !validateMatricNumber(studentInfo.matricNumber).isValid || !studentInfo.gender || !studentInfo.fullName.trim() || !studentInfo.department.trim()}
+                  className="flex-1 py-3 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-bold rounded-xl text-sm shadow-lg hover:shadow-[#0E623B]/30 transition flex items-center justify-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loadingExam ? (
                     <div className="w-4 h-4 border-2 border-[#F0F9F3] border-t-transparent rounded-full animate-spin" />
@@ -977,6 +1177,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               <div className="pt-2 border-t border-[#789981]/20">
                 <span className="text-[#789981] font-semibold uppercase text-[10px]">Gender</span>
                 <p className="font-bold text-[#D6BF62]">{studentInfo.gender || 'Not specified'}</p>
+              </div>
+              <div className="pt-2 border-t border-[#789981]/20 col-span-2">
+                <span className="text-[#789981] font-semibold uppercase text-[10px]">Course Lecturer</span>
+                <p className="font-bold text-[#F0F9F3]">{exam?.lecturerName || 'Not specified'}</p>
               </div>
             </div>
 
@@ -1246,46 +1450,57 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   {currentQuestion?.questionText}
                 </div>
 
-                {/* 4 Options Grid */}
+                {/* Options Grid (Supports standard A-D and True/False questions) */}
                 <div className="space-y-3 pt-2">
-                  {currentQuestion?.options.map((option, optIdx) => {
-                    const isSelected = answers[currentQuestion.id] === optIdx;
-                    const letter = String.fromCharCode(65 + optIdx);
+                  {(currentQuestion?.options || [])
+                    .map((option, optIdx) => ({ option, optIdx }))
+                    .filter(({ option }) => typeof option === 'string' && option.trim().length > 0)
+                    .map(({ option, optIdx }) => {
+                      const isSelected = answers[currentQuestion.id] === optIdx;
+                      const opt0 = (currentQuestion?.options?.[0] || '').trim().toLowerCase();
+                      const opt1 = (currentQuestion?.options?.[1] || '').trim().toLowerCase();
+                      const isTF =
+                        ((opt0 === 'true' && opt1 === 'false') || (opt0 === 'false' && opt1 === 'true')) &&
+                        !currentQuestion?.options?.[2]?.trim() &&
+                        !currentQuestion?.options?.[3]?.trim();
+                      const letter = isTF
+                        ? (option.trim().toLowerCase() === 'true' ? 'T' : 'F')
+                        : String.fromCharCode(65 + optIdx);
 
-                    return (
-                      <button
-                        key={optIdx}
-                        type="button"
-                        onClick={() => {
-                          const updated = {
-                            ...answers,
-                            [currentQuestion.id]: optIdx
-                          };
-                          setAnswers(updated);
-                          saveProgressToServer(updated);
-                        }}
-                        className={`w-full text-left p-4 rounded-2xl border transition flex items-center gap-3.5 cursor-pointer ${
-                          isSelected
-                            ? 'bg-[#0E623B]/30 border-2 border-[#D6BF62] shadow-lg'
-                            : 'bg-[#0A2419] border-[#789981]/30 hover:border-[#D6BF62]/50 hover:bg-[#0E3324]'
-                        }`}
-                      >
-                        <span
-                          className={`w-8 h-8 rounded-xl font-bold text-xs flex items-center justify-center shrink-0 transition ${
+                      return (
+                        <button
+                          key={optIdx}
+                          type="button"
+                          onClick={() => {
+                            const updated = {
+                              ...answers,
+                              [currentQuestion.id]: optIdx
+                            };
+                            setAnswers(updated);
+                            saveProgressToServer(updated);
+                          }}
+                          className={`w-full text-left p-4 rounded-2xl border transition flex items-center gap-3.5 cursor-pointer ${
                             isSelected
-                              ? 'bg-[#D6BF62] text-[#061C13] font-black'
-                              : 'bg-[#030515] text-[#789981] border border-[#789981]/30'
+                              ? 'bg-[#0E623B]/30 border-2 border-[#D6BF62] shadow-lg'
+                              : 'bg-[#0A2419] border-[#789981]/30 hover:border-[#D6BF62]/50 hover:bg-[#0E3324]'
                           }`}
                         >
-                          {letter}
-                        </span>
+                          <span
+                            className={`w-8 h-8 rounded-xl font-bold text-xs flex items-center justify-center shrink-0 transition ${
+                              isSelected
+                                ? 'bg-[#D6BF62] text-[#061C13] font-black'
+                                : 'bg-[#030515] text-[#789981] border border-[#789981]/30'
+                            }`}
+                          >
+                            {letter}
+                          </span>
 
-                        <span className={`text-sm ${isSelected ? 'text-[#F0F9F3] font-bold' : 'text-[#ADCDBA]'}`}>
-                          {option}
-                        </span>
-                      </button>
-                    );
-                  })}
+                          <span className={`text-sm ${isSelected ? 'text-[#F0F9F3] font-bold' : 'text-[#ADCDBA]'}`}>
+                            {option}
+                          </span>
+                        </button>
+                      );
+                    })}
                 </div>
 
                 {/* Question Navigation Controls */}
@@ -1657,6 +1872,20 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 <div>
                   <span className="text-[#789981] text-xs block">Course Code:</span>
                   <span className="font-bold text-[#F0F9F3] text-sm">{submissionReceipt.courseCode}</span>
+                </div>
+
+                <div>
+                  <span className="text-[#789981] text-xs block">Course Lecturer:</span>
+                  <span className="font-bold text-[#D6BF62] text-sm">
+                    {submissionReceipt.lecturerName || exam?.lecturerName || 'Not specified'}
+                  </span>
+                </div>
+
+                <div>
+                  <span className="text-[#789981] text-xs block">Department:</span>
+                  <span className="font-semibold text-[#ADCDBA]">
+                    {studentInfo.department || exam?.department || 'All Departments'}
+                  </span>
                 </div>
 
                 <div>

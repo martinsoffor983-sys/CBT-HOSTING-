@@ -20,9 +20,12 @@ import {
   Sparkles,
   Eye,
   X,
-  Share2
+  Share2,
+  Users,
+  UserCheck,
+  Upload
 } from 'lucide-react';
-import { Exam, Question } from '../../types';
+import { Exam, Question, RegisteredCandidate } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
@@ -33,7 +36,19 @@ import {
   DuplicatePair,
   ParsedQuestionDraft
 } from '../../utils/questionParser';
-import { getLagosDateTimeLocalString, parseLagosExamTime } from '../../utils/timeUtils';
+import {
+  getLagosDateTimeLocalString,
+  parseLagosExamTime,
+  formatLagosDate,
+  formatLagosTime,
+  formatLagosDateTime
+} from '../../utils/timeUtils';
+import {
+  validateMatricNumber,
+  capitalizeProper,
+  detectBatchMatricDuplicates,
+  validateAndReportCandidateBatch
+} from '../../utils/studentValidation';
 
 interface ExamEditorProps {
   initialExam?: Exam | null;
@@ -85,6 +100,7 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
   const [courseTitle, setCourseTitle] = useState(
     initialExam?.courseTitle || 'Foundations of Exercise Physiology & Sports Performance'
   );
+  const [lecturerName, setLecturerName] = useState(initialExam?.lecturerName || '');
 
   // Section 2: Department Selection (Simplified: "All Departments" or "Others")
   const initialDeptIsAll = !initialExam?.department || initialExam.department === 'All Departments';
@@ -142,6 +158,67 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
   const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
+
+  // Candidate Pre-Registration & Roster State
+  const [registeredCandidates, setRegisteredCandidates] = useState<RegisteredCandidate[]>(
+    initialExam?.registeredCandidates || []
+  );
+  const [candidateBatchInput, setCandidateBatchInput] = useState('');
+  const [candidateBatchError, setCandidateBatchError] = useState<string | null>(null);
+  const [candidateBatchSuccess, setCandidateBatchSuccess] = useState<string | null>(null);
+
+  const handleProcessCandidateBatch = () => {
+    setCandidateBatchError(null);
+    setCandidateBatchSuccess(null);
+    if (!candidateBatchInput.trim()) {
+      setCandidateBatchError('Please paste candidate records (Format: Matric Number, Full Name, Department, Sex: M/F).');
+      return;
+    }
+
+    const lines = candidateBatchInput.trim().split('\n');
+    const parsedList: Array<{ matricNumber: string; fullName: string; department: string; gender?: 'M' | 'F' }> = [];
+
+    for (let idx = 0; idx < lines.length; idx++) {
+      const line = lines[idx].trim();
+      if (!line) continue;
+      const parts = line.split(/[,|\t]+/).map(p => p.trim());
+      const rawMatric = parts[0] || '';
+      const rawName = parts[1] || '';
+      const rawDept = parts[2] || (resolvedDepartment !== 'All Departments' ? resolvedDepartment : '');
+      const rawSex = parts[3] ? parts[3].toUpperCase() : '';
+      const cleanSex: 'M' | 'F' | undefined = rawSex === 'M' || rawSex === 'MALE' ? 'M' : rawSex === 'F' || rawSex === 'FEMALE' ? 'F' : undefined;
+
+      parsedList.push({
+        matricNumber: rawMatric,
+        fullName: capitalizeProper(rawName),
+        department: capitalizeProper(rawDept),
+        gender: cleanSex
+      });
+    }
+
+    // Validate batch, detect in-batch duplicates, check already registered in this exam, and reject invalid/duplicates
+    const existingMatrics = new Set(registeredCandidates.map(c => c.matricNumber));
+    const report = validateAndReportCandidateBatch(parsedList, existingMatrics);
+
+    if (report.summary.rejectedCount > 0) {
+      setCandidateBatchError(report.reportMessage);
+      if (report.validCandidates.length > 0) {
+        // Do not import duplicates or invalid records; import only strictly valid candidates
+        setRegisteredCandidates(prev => [...prev, ...report.validCandidates]);
+        setCandidateBatchSuccess(`Imported ${report.validCandidates.length} valid candidate(s). Note: ${report.summary.rejectedCount} record(s) were rejected (see details above).`);
+        setCandidateBatchInput('');
+      }
+      return;
+    }
+
+    setRegisteredCandidates(prev => [...prev, ...report.validCandidates]);
+    setCandidateBatchSuccess(`Successfully verified and imported all ${report.validCandidates.length} candidate(s) without duplicates.`);
+    setCandidateBatchInput('');
+  };
+
+  const handleRemoveCandidate = (matricNumber: string) => {
+    setRegisteredCandidates(prev => prev.filter(c => c.matricNumber !== matricNumber));
+  };
 
   // Run duplicate check whenever questions list changes
   useEffect(() => {
@@ -244,9 +321,77 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
     setQuestions((prev) => [...prev, newQ]);
   };
 
+  const handleSelectAnswerOption = (
+    qIndex: number,
+    choice: 'A' | 'B' | 'C' | 'D' | 'True' | 'False'
+  ) => {
+    const currentQ = questions[qIndex];
+    if (!currentQ) return;
+
+    if (choice === 'True') {
+      const currentOpts = currentQ.options;
+      const opt0 = (currentOpts[0] || '').trim().toLowerCase();
+      const opt1 = (currentOpts[1] || '').trim().toLowerCase();
+      const isCurrentlyTF =
+        opt0 === 'true' &&
+        opt1 === 'false' &&
+        !currentOpts[2]?.trim() &&
+        !currentOpts[3]?.trim();
+
+      const cached = isCurrentlyTF ? currentQ._cachedMcqOptions : currentOpts;
+
+      handleUpdateQuestion(qIndex, {
+        options: ['True', 'False', '', ''],
+        correctAnswer: 0,
+        _cachedMcqOptions: cached
+      });
+    } else if (choice === 'False') {
+      const currentOpts = currentQ.options;
+      const opt0 = (currentOpts[0] || '').trim().toLowerCase();
+      const opt1 = (currentOpts[1] || '').trim().toLowerCase();
+      const isCurrentlyTF =
+        opt0 === 'true' &&
+        opt1 === 'false' &&
+        !currentOpts[2]?.trim() &&
+        !currentOpts[3]?.trim();
+
+      const cached = isCurrentlyTF ? currentQ._cachedMcqOptions : currentOpts;
+
+      handleUpdateQuestion(qIndex, {
+        options: ['True', 'False', '', ''],
+        correctAnswer: 1,
+        _cachedMcqOptions: cached
+      });
+    } else {
+      const optIdx = choice === 'A' ? 0 : choice === 'B' ? 1 : choice === 'C' ? 2 : 3;
+      let newOptions = [...currentQ.options];
+      const opt0 = (newOptions[0] || '').trim().toLowerCase();
+      const opt1 = (newOptions[1] || '').trim().toLowerCase();
+      const isCurrentlyTF =
+        opt0 === 'true' &&
+        opt1 === 'false' &&
+        !newOptions[2]?.trim() &&
+        !newOptions[3]?.trim();
+
+      if (isCurrentlyTF) {
+        const cached = currentQ._cachedMcqOptions;
+        if (cached && Array.isArray(cached) && cached.length >= 4) {
+          newOptions = [...cached];
+        } else {
+          newOptions = ['Option A', 'Option B', 'Option C', 'Option D'];
+        }
+      }
+
+      handleUpdateQuestion(qIndex, {
+        options: newOptions as any,
+        correctAnswer: optIdx
+      });
+    }
+  };
+
   // Resolved Department Name
   const resolvedDepartment =
-    departmentMode === 'all' ? 'All Departments' : customDepartment.trim();
+    departmentMode === 'all' ? 'All Departments' : capitalizeProper(customDepartment);
 
   // Validate Examination Data
   const runValidation = (isPublishing: boolean): { isValid: boolean; errors: string[] } => {
@@ -262,6 +407,10 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
     }
 
     if (isPublishing) {
+      if (!lecturerName.trim()) {
+        errs.push("Lecturer's Name is mandatory before publishing an examination.");
+      }
+
       if (questions.length === 0) {
         errs.push('An examination must contain at least 1 valid question to be published.');
       }
@@ -272,13 +421,26 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
         if (!q.questionText.trim()) {
           errs.push(`Question #${i + 1} has empty question text.`);
         }
-        for (let j = 0; j < 4; j++) {
-          if (!q.options[j]?.trim()) {
-            errs.push(`Question #${i + 1} is missing Option ${String.fromCharCode(65 + j)}.`);
+
+        const isTwoOption =
+          (!q.options[2] || !q.options[2].trim()) &&
+          (!q.options[3] || !q.options[3].trim()) &&
+          Boolean(q.options[0]?.trim()) &&
+          Boolean(q.options[1]?.trim());
+
+        if (isTwoOption) {
+          if (q.correctAnswer < 0 || q.correctAnswer > 1) {
+            errs.push(`Question #${i + 1} must have either True or False / Option A or B selected as the correct answer.`);
           }
-        }
-        if (q.correctAnswer < 0 || q.correctAnswer > 3) {
-          errs.push(`Question #${i + 1} does not have a valid correct answer assigned.`);
+        } else {
+          for (let j = 0; j < 4; j++) {
+            if (!q.options[j]?.trim()) {
+              errs.push(`Question #${i + 1} is missing Option ${String.fromCharCode(65 + j)}.`);
+            }
+          }
+          if (q.correctAnswer < 0 || q.correctAnswer > 3) {
+            errs.push(`Question #${i + 1} does not have a valid correct answer assigned.`);
+          }
         }
       }
 
@@ -319,6 +481,7 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
       id: examId,
       lecturerId: user.uid,
       lecturerEmail: user.email || 'sunsmartcbt@gmail.com',
+      lecturerName: capitalizeProper(lecturerName.trim()),
       courseCode: courseCode.trim().toUpperCase(),
       courseTitle: courseTitle.trim(),
       department: resolvedDepartment,
@@ -330,6 +493,7 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
       questionsCount: questions.length,
       targetQuestionsCount: questions.length,
       questions,
+      registeredCandidates,
       randomizationEnabled,
       batches,
       createdAt: initialExam?.createdAt || new Date().toISOString(),
@@ -515,6 +679,30 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
                 onChange={(e) => setCourseTitle(e.target.value)}
                 className="w-full px-4 py-3 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-semibold text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]"
               />
+            </div>
+
+            {/* Lecturer's Name Field (Dedicated Mandatory Field) */}
+            <div className="md:col-span-2">
+              <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1.5 flex items-center justify-between">
+                <span>
+                  Lecturer's Name <span className="text-[#D6BF62]">*</span>
+                </span>
+                <span className="text-[10px] text-[#D6BF62] font-semibold">
+                  Mandatory for publication
+                </span>
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="e.g. Dr. Emmanuel Okafor or Prof. A. B. Adeleke"
+                value={lecturerName}
+                onChange={(e) => setLecturerName(e.target.value)}
+                onBlur={(e) => setLecturerName(capitalizeProper(e.target.value))}
+                className="w-full px-4 py-3 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-semibold text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]"
+              />
+              <p className="text-[11px] text-[#789981] mt-1">
+                Enter the course lecturer's full name. This will be automatically associated with this examination, student examination scripts, and official result reports.
+              </p>
             </div>
 
             {/* Department Selection (Simplified: All Departments or Others) */}
@@ -897,10 +1085,10 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
             <button
               type="button"
               onClick={handleAddNewQuestion}
-              className="flex items-center gap-1.5 px-4 py-2 bg-[#0A2419] hover:bg-[#0E3324] text-[#D6BF62] font-bold text-xs rounded-xl border border-[#D6BF62]/30 transition cursor-pointer"
+              className="flex items-center gap-1.5 px-4 py-2 bg-[#0E623B] hover:bg-[#127949] text-[#F0F9F3] font-bold text-xs rounded-xl border border-[#D6BF62]/40 transition cursor-pointer shadow-sm"
             >
-              <Plus className="w-4 h-4" />
-              <span>Add Question Manually</span>
+              <Plus className="w-4 h-4 text-[#D6BF62]" />
+              <span>Add Question</span>
             </button>
           </div>
 
@@ -909,126 +1097,507 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
               <FileText className="w-12 h-12 mx-auto text-[#789981] mb-2" />
               <p className="font-bold text-sm text-[#F0F9F3]">No questions added yet</p>
               <p className="text-xs text-[#ADCDBA] mt-1 max-w-sm mx-auto">
-                Paste your question paper in Section 3 above or click "Add Question Manually" to begin creating questions.
+                Paste your question paper in Section 3 above or click "Add Question" to begin.
               </p>
             </div>
           ) : (
             <div className="space-y-6">
-              {questions.map((q, qIndex) => (
-                <div
-                  key={q.id || qIndex}
-                  className="p-5 sm:p-6 rounded-2xl border border-[#789981]/30 bg-[#0A2419] hover:border-[#D6BF62]/40 transition space-y-4"
-                >
-                  {/* Question Header & Order Controls */}
-                  <div className="flex items-center justify-between gap-2 border-b border-[#789981]/20 pb-3">
-                    <div className="flex items-center gap-2">
-                      <span className="w-7 h-7 rounded-lg bg-[#0E623B] text-[#D6BF62] border border-[#D6BF62]/30 flex items-center justify-center font-bold text-xs">
-                        {qIndex + 1}
-                      </span>
-                      <span className="text-xs font-bold text-[#F0F9F3] uppercase tracking-wide">
-                        Question #{qIndex + 1}
-                      </span>
-                      {q.explanation && q.explanation.startsWith('Flagged:') && (
-                        <span className="px-2 py-0.5 bg-amber-400/20 text-amber-300 text-[10px] font-bold rounded border border-amber-400/30">
-                          Needs Review
+              {questions.map((q, qIndex) => {
+                const optA = (q.options[0] || '').trim().toLowerCase();
+                const optB = (q.options[1] || '').trim().toLowerCase();
+                const isTrueFalseQ =
+                  optA === 'true' &&
+                  optB === 'false' &&
+                  !q.options[2]?.trim() &&
+                  !q.options[3]?.trim();
+
+                const isCorrectA = !isTrueFalseQ && q.correctAnswer === 0;
+                const isCorrectB = !isTrueFalseQ && q.correctAnswer === 1;
+                const isCorrectC = !isTrueFalseQ && q.correctAnswer === 2;
+                const isCorrectD = !isTrueFalseQ && q.correctAnswer === 3;
+                const isCorrectTrue = isTrueFalseQ && q.correctAnswer === 0;
+                const isCorrectFalse = isTrueFalseQ && q.correctAnswer === 1;
+
+                return (
+                  <div
+                    key={q.id || qIndex}
+                    className="p-5 sm:p-6 rounded-2xl border border-[#789981]/30 bg-[#0A2419] hover:border-[#D6BF62]/40 transition space-y-4"
+                  >
+                    {/* Question Header & Order Controls */}
+                    <div className="flex items-center justify-between gap-2 border-b border-[#789981]/20 pb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="w-7 h-7 rounded-lg bg-[#0E623B] text-[#D6BF62] border border-[#D6BF62]/30 flex items-center justify-center font-bold text-xs">
+                          {qIndex + 1}
                         </span>
-                      )}
+                        <span className="text-xs font-bold text-[#F0F9F3] uppercase tracking-wide">
+                          Question #{qIndex + 1}
+                        </span>
+                        {q.explanation && q.explanation.startsWith('Flagged:') && (
+                          <span className="px-2 py-0.5 bg-amber-400/20 text-amber-300 text-[10px] font-bold rounded border border-amber-400/30">
+                            Needs Review
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleMoveQuestion(qIndex, 'up')}
+                          disabled={qIndex === 0}
+                          title="Move Up"
+                          className="p-1.5 text-[#789981] hover:text-[#F0F9F3] disabled:opacity-20 rounded cursor-pointer"
+                        >
+                          <ChevronUp className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveQuestion(qIndex, 'down')}
+                          disabled={qIndex === questions.length - 1}
+                          title="Move Down"
+                          className="p-1.5 text-[#789981] hover:text-[#F0F9F3] disabled:opacity-20 rounded cursor-pointer"
+                        >
+                          <ChevronDown className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteQuestion(qIndex)}
+                          title="Delete Question"
+                          className="p-1.5 text-red-400 hover:text-red-300 rounded ml-1 cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => handleMoveQuestion(qIndex, 'up')}
-                        disabled={qIndex === 0}
-                        title="Move Up"
-                        className="p-1.5 text-[#789981] hover:text-[#F0F9F3] disabled:opacity-20 rounded cursor-pointer"
-                      >
-                        <ChevronUp className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleMoveQuestion(qIndex, 'down')}
-                        disabled={qIndex === questions.length - 1}
-                        title="Move Down"
-                        className="p-1.5 text-[#789981] hover:text-[#F0F9F3] disabled:opacity-20 rounded cursor-pointer"
-                      >
-                        <ChevronDown className="w-4 h-4" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteQuestion(qIndex)}
-                        title="Delete Question"
-                        className="p-1.5 text-red-400 hover:text-red-300 rounded ml-1 cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                    {/* Question Text */}
+                    <div>
+                      <label className="block text-[11px] font-bold uppercase tracking-wider text-[#789981] mb-1">
+                        Question Text
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={q.questionText}
+                        onChange={(e) => handleUpdateQuestion(qIndex, { questionText: e.target.value })}
+                        placeholder="Enter question text here..."
+                        className="w-full p-3 bg-[#061C13] border border-[#789981]/40 rounded-xl text-xs sm:text-sm font-semibold text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]"
+                      />
                     </div>
-                  </div>
 
-                  {/* Question Text */}
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-[#789981] mb-1">
-                      Question Text
-                    </label>
-                    <textarea
-                      rows={2}
-                      value={q.questionText}
-                      onChange={(e) => handleUpdateQuestion(qIndex, { questionText: e.target.value })}
-                      placeholder="Enter question text here..."
-                      className="w-full p-3 bg-[#061C13] border border-[#789981]/40 rounded-xl text-xs sm:text-sm font-semibold text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]"
-                    />
-                  </div>
+                    {/* Unified Section: Set the Correct Answer */}
+                    <div className="space-y-2.5 pt-1">
+                      <div className="flex flex-wrap items-center justify-between gap-1">
+                        <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA]">
+                          Set the Correct Answer
+                        </label>
+                        <span className="text-[11px] text-[#789981]">
+                          Select exactly one correct answer from the six options below
+                        </span>
+                      </div>
 
-                  {/* Options A, B, C, D */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {[0, 1, 2, 3].map((optIdx) => {
-                      const letter = String.fromCharCode(65 + optIdx);
-                      const isCorrect = q.correctAnswer === optIdx;
-                      return (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {/* 1. Option A */}
                         <div
-                          key={optIdx}
-                          className={`p-3 rounded-xl border transition ${
-                            isCorrect
-                              ? 'bg-[#0E623B]/30 border-2 border-[#D6BF62]'
-                              : 'bg-[#061C13] border-[#789981]/30'
+                          className={`p-3.5 rounded-xl border transition ${
+                            isCorrectA
+                              ? 'bg-[#0E623B]/30 border-2 border-[#D6BF62] shadow-sm'
+                              : 'bg-[#061C13] border-[#789981]/30 hover:border-[#789981]/60'
                           }`}
                         >
-                          <div className="flex items-center justify-between mb-1">
-                            <label className="text-[11px] font-bold text-[#ADCDBA] flex items-center gap-1.5">
-                              <span className={`w-5 h-5 rounded flex items-center justify-center font-bold text-[10px] ${
-                                isCorrect ? 'bg-[#D6BF62] text-[#061C13]' : 'bg-[#030515] text-[#ADCDBA] border border-[#789981]/30'
-                              }`}>
-                                {letter}
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-xs transition ${
+                                  isCorrectA
+                                    ? 'bg-[#D6BF62] text-[#061C13]'
+                                    : 'bg-[#030515] text-[#ADCDBA] border border-[#789981]/30'
+                                }`}
+                              >
+                                A
                               </span>
-                              <span>Option {letter}</span>
-                            </label>
+                              <span className="text-xs font-bold text-[#F0F9F3]">Option A</span>
+                            </div>
 
                             <button
                               type="button"
-                              onClick={() => handleUpdateQuestion(qIndex, { correctAnswer: optIdx })}
-                              className={`text-[10px] font-bold px-2 py-0.5 rounded transition cursor-pointer ${
-                                isCorrect
-                                  ? 'bg-[#D6BF62] text-[#061C13]'
-                                  : 'bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/30'
+                              onClick={() => handleSelectAnswerOption(qIndex, 'A')}
+                              className={`text-[11px] font-bold px-3 py-1 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                                isCorrectA
+                                  ? 'bg-[#D6BF62] text-[#061C13] shadow-sm ring-1 ring-[#D6BF62]'
+                                  : 'bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/30 hover:text-[#F0F9F3]'
                               }`}
                             >
-                              {isCorrect ? '✓ Correct Answer' : 'Set as Correct'}
+                              {isCorrectA ? '✓ Correct Answer' : 'Set as Correct'}
                             </button>
                           </div>
 
                           <input
                             type="text"
-                            value={q.options[optIdx] || ''}
-                            onChange={(e) => handleUpdateOption(qIndex, optIdx, e.target.value)}
-                            placeholder={`Enter Option ${letter}`}
-                            className="w-full px-3 py-1.5 bg-transparent border-b border-[#789981]/30 focus:border-[#D6BF62] text-xs font-medium text-[#F0F9F3] placeholder-[#789981]/60 focus:outline-none"
+                            value={isTrueFalseQ ? '' : (q.options[0] || '')}
+                            disabled={isTrueFalseQ}
+                            onChange={(e) => handleUpdateOption(qIndex, 0, e.target.value)}
+                            placeholder={isTrueFalseQ ? 'Disabled for True/False (Click Set as Correct to enable)' : 'Enter Option A'}
+                            className={`w-full px-3 py-2 rounded-xl text-xs font-medium focus:outline-none transition ${
+                              isTrueFalseQ
+                                ? 'bg-[#0A2419]/40 text-[#789981]/50 border border-[#789981]/20 cursor-not-allowed placeholder-[#789981]/40'
+                                : 'bg-[#0A2419] border border-[#789981]/40 text-[#F0F9F3] placeholder-[#789981]/70 focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]'
+                            }`}
                           />
                         </div>
-                      );
-                    })}
+
+                        {/* 2. Option B */}
+                        <div
+                          className={`p-3.5 rounded-xl border transition ${
+                            isCorrectB
+                              ? 'bg-[#0E623B]/30 border-2 border-[#D6BF62] shadow-sm'
+                              : 'bg-[#061C13] border-[#789981]/30 hover:border-[#789981]/60'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-xs transition ${
+                                  isCorrectB
+                                    ? 'bg-[#D6BF62] text-[#061C13]'
+                                    : 'bg-[#030515] text-[#ADCDBA] border border-[#789981]/30'
+                                }`}
+                              >
+                                B
+                              </span>
+                              <span className="text-xs font-bold text-[#F0F9F3]">Option B</span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleSelectAnswerOption(qIndex, 'B')}
+                              className={`text-[11px] font-bold px-3 py-1 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                                isCorrectB
+                                  ? 'bg-[#D6BF62] text-[#061C13] shadow-sm ring-1 ring-[#D6BF62]'
+                                  : 'bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/30 hover:text-[#F0F9F3]'
+                              }`}
+                            >
+                              {isCorrectB ? '✓ Correct Answer' : 'Set as Correct'}
+                            </button>
+                          </div>
+
+                          <input
+                            type="text"
+                            value={isTrueFalseQ ? '' : (q.options[1] || '')}
+                            disabled={isTrueFalseQ}
+                            onChange={(e) => handleUpdateOption(qIndex, 1, e.target.value)}
+                            placeholder={isTrueFalseQ ? 'Disabled for True/False (Click Set as Correct to enable)' : 'Enter Option B'}
+                            className={`w-full px-3 py-2 rounded-xl text-xs font-medium focus:outline-none transition ${
+                              isTrueFalseQ
+                                ? 'bg-[#0A2419]/40 text-[#789981]/50 border border-[#789981]/20 cursor-not-allowed placeholder-[#789981]/40'
+                                : 'bg-[#0A2419] border border-[#789981]/40 text-[#F0F9F3] placeholder-[#789981]/70 focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]'
+                            }`}
+                          />
+                        </div>
+
+                        {/* 3. Option C */}
+                        <div
+                          className={`p-3.5 rounded-xl border transition ${
+                            isCorrectC
+                              ? 'bg-[#0E623B]/30 border-2 border-[#D6BF62] shadow-sm'
+                              : 'bg-[#061C13] border-[#789981]/30 hover:border-[#789981]/60'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-xs transition ${
+                                  isCorrectC
+                                    ? 'bg-[#D6BF62] text-[#061C13]'
+                                    : 'bg-[#030515] text-[#ADCDBA] border border-[#789981]/30'
+                                }`}
+                              >
+                                C
+                              </span>
+                              <span className="text-xs font-bold text-[#F0F9F3]">Option C</span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleSelectAnswerOption(qIndex, 'C')}
+                              className={`text-[11px] font-bold px-3 py-1 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                                isCorrectC
+                                  ? 'bg-[#D6BF62] text-[#061C13] shadow-sm ring-1 ring-[#D6BF62]'
+                                  : 'bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/30 hover:text-[#F0F9F3]'
+                              }`}
+                            >
+                              {isCorrectC ? '✓ Correct Answer' : 'Set as Correct'}
+                            </button>
+                          </div>
+
+                          <input
+                            type="text"
+                            value={isTrueFalseQ ? '' : (q.options[2] || '')}
+                            disabled={isTrueFalseQ}
+                            onChange={(e) => handleUpdateOption(qIndex, 2, e.target.value)}
+                            placeholder={isTrueFalseQ ? 'Disabled for True/False (Click Set as Correct to enable)' : 'Enter Option C'}
+                            className={`w-full px-3 py-2 rounded-xl text-xs font-medium focus:outline-none transition ${
+                              isTrueFalseQ
+                                ? 'bg-[#0A2419]/40 text-[#789981]/50 border border-[#789981]/20 cursor-not-allowed placeholder-[#789981]/40'
+                                : 'bg-[#0A2419] border border-[#789981]/40 text-[#F0F9F3] placeholder-[#789981]/70 focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]'
+                            }`}
+                          />
+                        </div>
+
+                        {/* 4. Option D */}
+                        <div
+                          className={`p-3.5 rounded-xl border transition ${
+                            isCorrectD
+                              ? 'bg-[#0E623B]/30 border-2 border-[#D6BF62] shadow-sm'
+                              : 'bg-[#061C13] border-[#789981]/30 hover:border-[#789981]/60'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-xs transition ${
+                                  isCorrectD
+                                    ? 'bg-[#D6BF62] text-[#061C13]'
+                                    : 'bg-[#030515] text-[#ADCDBA] border border-[#789981]/30'
+                                }`}
+                              >
+                                D
+                              </span>
+                              <span className="text-xs font-bold text-[#F0F9F3]">Option D</span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleSelectAnswerOption(qIndex, 'D')}
+                              className={`text-[11px] font-bold px-3 py-1 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                                isCorrectD
+                                  ? 'bg-[#D6BF62] text-[#061C13] shadow-sm ring-1 ring-[#D6BF62]'
+                                  : 'bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/30 hover:text-[#F0F9F3]'
+                              }`}
+                            >
+                              {isCorrectD ? '✓ Correct Answer' : 'Set as Correct'}
+                            </button>
+                          </div>
+
+                          <input
+                            type="text"
+                            value={isTrueFalseQ ? '' : (q.options[3] || '')}
+                            disabled={isTrueFalseQ}
+                            onChange={(e) => handleUpdateOption(qIndex, 3, e.target.value)}
+                            placeholder={isTrueFalseQ ? 'Disabled for True/False (Click Set as Correct to enable)' : 'Enter Option D'}
+                            className={`w-full px-3 py-2 rounded-xl text-xs font-medium focus:outline-none transition ${
+                              isTrueFalseQ
+                                ? 'bg-[#0A2419]/40 text-[#789981]/50 border border-[#789981]/20 cursor-not-allowed placeholder-[#789981]/40'
+                                : 'bg-[#0A2419] border border-[#789981]/40 text-[#F0F9F3] placeholder-[#789981]/70 focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]'
+                            }`}
+                          />
+                        </div>
+
+                        {/* 5. True */}
+                        <div
+                          className={`p-3.5 rounded-xl border transition ${
+                            isCorrectTrue
+                              ? 'bg-[#0E623B]/30 border-2 border-[#D6BF62] shadow-sm'
+                              : 'bg-[#061C13] border-[#789981]/30 hover:border-[#789981]/60'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-xs transition ${
+                                  isCorrectTrue
+                                    ? 'bg-[#D6BF62] text-[#061C13]'
+                                    : 'bg-[#030515] text-[#ADCDBA] border border-[#789981]/30'
+                                }`}
+                              >
+                                T
+                              </span>
+                              <span className="text-xs font-bold text-[#F0F9F3]">True</span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleSelectAnswerOption(qIndex, 'True')}
+                              className={`text-[11px] font-bold px-3 py-1 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                                isCorrectTrue
+                                  ? 'bg-[#D6BF62] text-[#061C13] shadow-sm ring-1 ring-[#D6BF62]'
+                                  : 'bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/30 hover:text-[#F0F9F3]'
+                              }`}
+                            >
+                              {isCorrectTrue ? '✓ Correct Answer' : 'Set as Correct'}
+                            </button>
+                          </div>
+
+                          <div className="px-3 py-2 rounded-xl bg-[#0A2419]/60 border border-[#789981]/20 flex items-center justify-between text-xs text-[#ADCDBA]">
+                            <span className="font-medium">True statement answer</span>
+                            <span className="text-[10px] font-bold text-[#D6BF62] bg-[#0E623B]/60 px-2 py-0.5 rounded border border-[#D6BF62]/30">
+                              ✓ Correct if True
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* 6. False */}
+                        <div
+                          className={`p-3.5 rounded-xl border transition ${
+                            isCorrectFalse
+                              ? 'bg-[#0E623B]/30 border-2 border-[#D6BF62] shadow-sm'
+                              : 'bg-[#061C13] border-[#789981]/30 hover:border-[#789981]/60'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-xs transition ${
+                                  isCorrectFalse
+                                    ? 'bg-[#D6BF62] text-[#061C13]'
+                                    : 'bg-[#030515] text-[#ADCDBA] border border-[#789981]/30'
+                                }`}
+                              >
+                                F
+                              </span>
+                              <span className="text-xs font-bold text-[#F0F9F3]">False</span>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => handleSelectAnswerOption(qIndex, 'False')}
+                              className={`text-[11px] font-bold px-3 py-1 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+                                isCorrectFalse
+                                  ? 'bg-[#D6BF62] text-[#061C13] shadow-sm ring-1 ring-[#D6BF62]'
+                                  : 'bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/30 hover:text-[#F0F9F3]'
+                              }`}
+                            >
+                              {isCorrectFalse ? '✓ Correct Answer' : 'Set as Correct'}
+                            </button>
+                          </div>
+
+                          <div className="px-3 py-2 rounded-xl bg-[#0A2419]/60 border border-[#789981]/20 flex items-center justify-between text-xs text-[#ADCDBA]">
+                            <span className="font-medium">False statement answer</span>
+                            <span className="text-[10px] font-bold text-[#D6BF62] bg-[#0E623B]/60 px-2 py-0.5 rounded border border-[#D6BF62]/30">
+                              ✓ Correct if False
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* SECTION 6: CANDIDATE PRE-REGISTRATION & BATCH DUPLICATE DETECTION */}
+        <div className="bg-[#061C13] rounded-3xl shadow-xl border border-[#789981]/30 p-6 sm:p-8 space-y-5">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-4 border-b border-[#789981]/20">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-[#0A2419] border border-[#D6BF62]/30 rounded-xl text-[#D6BF62]">
+                <Users className="w-5 h-5 text-[#D6BF62]" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-[#F0F9F3] text-base">
+                  6. Candidate Roster & Pre-Registration ({registeredCandidates.length})
+                </h3>
+                <p className="text-xs text-[#ADCDBA]">
+                  Pre-register candidates and perform batch duplicate matriculation detection before the examination begins
+                </p>
+              </div>
+            </div>
+
+            <span className="px-3 py-1 bg-[#0E623B] text-[#D6BF62] border border-[#D6BF62]/40 rounded-full text-xs font-extrabold">
+              {registeredCandidates.length} Registered
+            </span>
+          </div>
+
+          <div className="space-y-3">
+            <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA]">
+              Paste Candidate Records (Format: Matric Number, Full Name, Department, Sex [M/F])
+            </label>
+            <textarea
+              rows={4}
+              value={candidateBatchInput}
+              onChange={(e) => {
+                setCandidateBatchInput(e.target.value);
+                setCandidateBatchError(null);
+              }}
+              placeholder={`2026201120, John Doe, Anatomy, M\nDE2026201121, Jane Smith, Nursing, F`}
+              className="w-full p-3.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs sm:text-sm font-mono text-[#F0F9F3] placeholder-[#789981]/60 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]"
+            />
+            <p className="text-[11px] text-[#789981]">
+              Accepted matriculation formats: 10 digits (e.g. 2026201120) or Direct Entry DE followed by 10 digits (e.g. DE2026201120). Duplicates within this examination are automatically rejected.
+            </p>
+
+            {candidateBatchError && (
+              <div className="p-3.5 bg-[#2A0808] border border-red-500/50 rounded-xl text-red-200 text-xs flex items-start gap-2.5 whitespace-pre-line">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                <span>{candidateBatchError}</span>
+              </div>
+            )}
+
+            {candidateBatchSuccess && (
+              <div className="p-3 bg-[#082216] border border-[#0E623B] rounded-xl text-emerald-300 text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{candidateBatchSuccess}</span>
+              </div>
+            )}
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={handleProcessCandidateBatch}
+                className="flex items-center gap-1.5 px-4 py-2.5 bg-[#0E623B] hover:bg-[#127949] text-[#F0F9F3] font-bold text-xs rounded-xl border border-[#D6BF62]/50 transition cursor-pointer shadow-md"
+              >
+                <Upload className="w-4 h-4 text-[#D6BF62]" />
+                <span>Verify & Import Candidates</span>
+              </button>
+
+              {registeredCandidates.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setRegisteredCandidates([])}
+                  className="px-3.5 py-2.5 bg-[#0A2419] hover:bg-red-950/40 text-red-300 font-bold text-xs rounded-xl border border-red-500/30 transition cursor-pointer"
+                >
+                  Clear Roster ({registeredCandidates.length})
+                </button>
+              )}
+            </div>
+          </div>
+
+          {registeredCandidates.length > 0 && (
+            <div className="mt-4 pt-4 border-t border-[#789981]/20">
+              <div className="max-h-60 overflow-y-auto rounded-xl border border-[#789981]/30">
+                <table className="w-full text-left text-xs text-[#ADCDBA]">
+                  <thead className="bg-[#0A2419] text-[#789981] uppercase font-bold sticky top-0 border-b border-[#789981]/30">
+                    <tr>
+                      <th className="p-2.5">#</th>
+                      <th className="p-2.5">Matric Number</th>
+                      <th className="p-2.5">Student Name</th>
+                      <th className="p-2.5">Department</th>
+                      <th className="p-2.5">Sex</th>
+                      <th className="p-2.5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#789981]/20 bg-[#061C13]">
+                    {registeredCandidates.map((c, idx) => (
+                      <tr key={c.matricNumber} className="hover:bg-[#0A2419]/60 transition">
+                        <td className="p-2.5 font-bold text-[#789981]">{idx + 1}</td>
+                        <td className="p-2.5 font-mono font-bold text-[#D6BF62]">{c.matricNumber}</td>
+                        <td className="p-2.5 font-semibold text-[#F0F9F3]">{c.fullName || '—'}</td>
+                        <td className="p-2.5">{c.department || '—'}</td>
+                        <td className="p-2.5 font-bold">{c.gender || 'Not recorded'}</td>
+                        <td className="p-2.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveCandidate(c.matricNumber)}
+                            className="text-red-400 hover:text-red-300 p-1 cursor-pointer"
+                            title="Remove candidate"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
@@ -1173,6 +1742,43 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
               <p className="text-xs text-[#ADCDBA] mt-1">
                 {courseCode} - {courseTitle} is now accessible to students using its Exam ID.
               </p>
+            </div>
+
+            {/* Examination Publication Details */}
+            <div className="bg-[#0A2419] p-4 rounded-2xl border border-[#789981]/30 space-y-2 text-left text-xs">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#D6BF62] block">
+                Official Examination Publication Details
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px] pt-1">
+                <div className="sm:col-span-2">
+                  <span className="text-[#789981] block">Course:</span>
+                  <span className="font-bold text-[#F0F9F3]">{courseCode} - {courseTitle}</span>
+                </div>
+                <div>
+                  <span className="text-[#789981] block">Course Lecturer:</span>
+                  <span className="font-bold text-[#D6BF62]">{capitalizeProper(lecturerName)}</span>
+                </div>
+                <div>
+                  <span className="text-[#789981] block">Department:</span>
+                  <span className="font-bold text-[#F0F9F3]">{resolvedDepartment}</span>
+                </div>
+                <div>
+                  <span className="text-[#789981] block">Examination Date:</span>
+                  <span className="font-bold text-[#F0F9F3]">{formatLagosDate(startDate)}</span>
+                </div>
+                <div>
+                  <span className="text-[#789981] block">Starting Time:</span>
+                  <span className="font-bold text-[#F0F9F3]">{formatLagosTime(startDate)} (WAT)</span>
+                </div>
+                <div>
+                  <span className="text-[#789981] block">Closing Time:</span>
+                  <span className="font-bold text-[#F0F9F3]">{formatLagosTime(endDate)} (WAT)</span>
+                </div>
+                <div>
+                  <span className="text-[#789981] block">Allocated Duration:</span>
+                  <span className="font-bold text-[#ADCDBA]">{durationMinutes} Minutes</span>
+                </div>
+              </div>
             </div>
 
             {/* Exam ID Display */}

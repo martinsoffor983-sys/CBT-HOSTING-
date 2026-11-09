@@ -1,5 +1,6 @@
 import { Firestore, doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { parseLagosExamTime, formatLagosDateTime } from './timeUtils.ts';
+import { isAnswerCorrect } from '../utils/studentValidation.ts';
 
 export interface ActiveSessionTracker {
   sessionId: string;
@@ -175,6 +176,20 @@ export class TimerEnforcementManager {
   }
 
   /**
+   * Evict all active in-memory sessions for an exam when results are deleted
+   */
+  public clearSessionsForExam(examId: string): number {
+    let evicted = 0;
+    for (const [sId, sess] of this.activeSessions.entries()) {
+      if (sess.examId === examId) {
+        this.activeSessions.delete(sId);
+        evicted++;
+      }
+    }
+    return evicted;
+  }
+
+  /**
    * Automatically grades and submits the exam when time expires or official closing time arrives
    */
   public async executeAutoSubmission(session: ActiveSessionTracker): Promise<any> {
@@ -197,16 +212,61 @@ export class TimerEnforcementManager {
       }
       const examData = examDoc.data();
 
-      // 2. Grade saved answers
-      const questions = Array.isArray(examData.questions) ? examData.questions : [];
-      let score = 0;
-      const totalQuestions = questions.length;
+      // 2. Resolve exact question order presented to the candidate for the assigned batch
+      const assignedBatch = session.batch || 'Batch A';
+      const rawQuestions = Array.isArray(examData.questions) ? examData.questions : [];
+      let orderedQuestions = [...rawQuestions];
 
-      questions.forEach((q: any, idx: number) => {
+      if (examData.randomizationEnabled && examData.batches && examData.batches[assignedBatch]) {
+        const batchIds = examData.batches[assignedBatch].questionIds;
+        if (Array.isArray(batchIds) && batchIds.length > 0) {
+          const questionMap = new Map(rawQuestions.map((q: any) => [q.id, q]));
+          const batchOrdered: any[] = [];
+          batchIds.forEach((id: string) => {
+            const q = questionMap.get(id);
+            if (q) batchOrdered.push(q);
+          });
+          rawQuestions.forEach((q: any) => {
+            if (!batchIds.includes(q.id)) batchOrdered.push(q);
+          });
+          orderedQuestions = batchOrdered;
+        }
+      }
+
+      // Build immutable question snapshot preserving exact text, options, order and correct answers
+      const questionSnapshot = orderedQuestions.map((q: any, idx: number) => ({
+        id: q.id || `q_${idx}`,
+        questionNumber: idx + 1,
+        questionText: q.questionText || '',
+        options: Array.isArray(q.options) ? q.options : [],
+        correctAnswer: typeof q.correctAnswer === 'number' ? q.correctAnswer : 0,
+        isTrueFalse: Boolean(
+          (q.options && q.options.length === 2 && (q.options[0].toLowerCase() === 'true')) ||
+          q.isTrueFalse
+        )
+      }));
+
+      let score = 0;
+      let attemptedCount = 0;
+      let correctCount = 0;
+      let incorrectCount = 0;
+      let unansweredCount = 0;
+      const totalQuestions = orderedQuestions.length;
+
+      orderedQuestions.forEach((q: any, idx: number) => {
         const qKey = q.id || `q_${idx}`;
         const candidateChoice = session.answers[qKey];
-        if (candidateChoice !== undefined && Number(candidateChoice) === Number(q.correctAnswer)) {
-          score += 1;
+        const isUnanswered = candidateChoice === undefined || candidateChoice === null || Number(candidateChoice) < 0 || isNaN(Number(candidateChoice));
+        if (isUnanswered) {
+          unansweredCount += 1;
+        } else {
+          attemptedCount += 1;
+          if (isAnswerCorrect(candidateChoice, q.correctAnswer, q.options || [])) {
+            score += 1;
+            correctCount += 1;
+          } else {
+            incorrectCount += 1;
+          }
         }
       });
 
@@ -219,6 +279,7 @@ export class TimerEnforcementManager {
       await setDoc(doc(this.db, 'submissions', submissionId), {
         examId: session.examId,
         lecturerId: examData.lecturerId || 'central_examiner',
+        lecturerName: examData.lecturerName || 'Not specified',
         fullName: session.fullName,
         matricNumber: session.matricNumber,
         department: session.department,
@@ -232,10 +293,15 @@ export class TimerEnforcementManager {
         score,
         totalQuestions,
         percentage,
+        attemptedCount,
+        unansweredCount,
+        correctCount,
+        incorrectCount,
         submittedAt,
         submissionReceipt,
-        batch: session.batch || 'Batch A',
+        batch: assignedBatch,
         answers: session.answers,
+        questionSnapshot,
         submissionType: isClosingTimeTrigger ? 'auto_closing_time' : 'auto_timer'
       });
 
@@ -263,6 +329,7 @@ export class TimerEnforcementManager {
         matricNumber: session.matricNumber,
         courseCode: examData.courseCode,
         courseTitle: examData.courseTitle,
+        lecturerName: examData.lecturerName || 'Not specified',
         totalQuestions,
         autoSubmitted: true,
         cause: isClosingTimeTrigger ? 'closing_time' : 'timer'

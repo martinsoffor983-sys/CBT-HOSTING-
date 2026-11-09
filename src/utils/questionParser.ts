@@ -97,12 +97,18 @@ export function parseBulkQuestions(rawText: string): ParseResult {
     }
 
     // Determine correct answer
-    // Checks for explicit line: "Answer: A", "Correct Answer: B", "Ans: C", "Key: D"
+    // Checks for explicit line: "Answer: A", "Correct Answer: B", "Ans: C", "Key: D", "Answer: True", "Answer: False"
     let correctAnswer = -1;
-    const ansKeyMatch = block.match(/(?:Correct\s*Answer|Answer|Ans|Key)\s*[:=\-]?\s*[\(\[]?\s*([A-D])/i);
+    const ansKeyMatch = block.match(/(?:Correct\s*Answer|Answer|Ans|Key)\s*[:=\-]?\s*[\(\[]?\s*([A-D]|True|False|T|F)\b/i);
     if (ansKeyMatch) {
-      const letter = ansKeyMatch[1].toUpperCase();
-      correctAnswer = letter === 'A' ? 0 : letter === 'B' ? 1 : letter === 'C' ? 2 : 3;
+      const token = ansKeyMatch[1].toUpperCase();
+      if (token === 'TRUE' || token === 'T') {
+        correctAnswer = 0;
+      } else if (token === 'FALSE' || token === 'F') {
+        correctAnswer = 1;
+      } else {
+        correctAnswer = token === 'A' ? 0 : token === 'B' ? 1 : token === 'C' ? 2 : 3;
+      }
     } else {
       // Check for asterisk or checkbox indicator on options e.g. "*A.", "*B."
       if (/(?:^|\n)\s*\*\s*A[\.\)]/i.test(block) || /(?:^|\n)\s*\[[xX]\]\s*A/i.test(block)) {
@@ -120,14 +126,25 @@ export function parseBulkQuestions(rawText: string): ParseResult {
     const cleanOpt = (opt: string | undefined): string => {
       if (!opt) return '';
       return opt
-        .replace(/(?:Correct\s*Answer|Answer|Ans|Key)\s*[:=\-]?\s*[A-D].*$/i, '')
+        .replace(/(?:Correct\s*Answer|Answer|Ans|Key)\s*[:=\-]?\s*(?:[A-D]|True|False|T|F).*$/i, '')
         .trim();
     };
 
-    const optA = cleanOpt(matchA?.[1]);
-    const optB = cleanOpt(matchB?.[1]);
-    const optC = cleanOpt(matchC?.[1]);
-    const optD = cleanOpt(matchD?.[1]);
+    let optA = cleanOpt(matchA?.[1]);
+    let optB = cleanOpt(matchB?.[1]);
+    let optC = cleanOpt(matchC?.[1]);
+    let optD = cleanOpt(matchD?.[1]);
+
+    // Check if this is a True/False question
+    const isTrueFalse =
+      (optA && optA.toLowerCase() === 'true' && optB && optB.toLowerCase() === 'false') ||
+      (optA && optA.toLowerCase() === 'false' && optB && optB.toLowerCase() === 'true') ||
+      (/(?:Correct\s*Answer|Answer|Ans|Key)\s*[:=\-]?\s*(?:True|False)\b/i.test(block) && !optC && !optD);
+
+    if (isTrueFalse && !optA && !optB) {
+      optA = 'True';
+      optB = 'False';
+    }
 
     // Validation checks
     if (!stem || stem.length < 3) {
@@ -135,18 +152,23 @@ export function parseBulkQuestions(rawText: string): ParseResult {
     }
     if (!optA) errors.push('Option A is missing.');
     if (!optB) errors.push('Option B is missing.');
-    if (!optC) errors.push('Option C is missing.');
-    if (!optD) errors.push('Option D is missing.');
+
+    if (!isTrueFalse) {
+      if (!optC) errors.push('Option C is missing.');
+      if (!optD) errors.push('Option D is missing.');
+    }
 
     if (correctAnswer === -1) {
-      errors.push('Correct answer not detected (e.g., "Answer: A").');
+      errors.push('Correct answer not detected (e.g., "Answer: A", "Answer: True").');
     }
 
     parsedList.push({
       id: `q_${Date.now()}_${index}_${Math.random().toString(36).substring(2, 6)}`,
       originalNumber,
       questionText: stem || `Question ${index + 1}`,
-      options: [optA || '', optB || '', optC || '', optD || ''],
+      options: isTrueFalse
+        ? [optA || 'True', optB || 'False', '', '']
+        : [optA || '', optB || '', optC || '', optD || ''],
       correctAnswer: correctAnswer >= 0 ? correctAnswer : 0,
       errors,
       isValid: errors.length === 0

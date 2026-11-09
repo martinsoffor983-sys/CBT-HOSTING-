@@ -13,20 +13,38 @@ import {
   CheckCircle,
   XCircle,
   Clock,
-  ArrowUpDown
+  ArrowUpDown,
+  Eye,
+  User,
+  Calendar,
+  X,
+  Printer,
+  ShieldAlert,
+  Check,
+  HelpCircle,
+  Eraser,
+  ClipboardCheck
 } from 'lucide-react';
-import { Exam, Submission, SUN_DEPARTMENTS } from '../../types';
+import { Exam, Submission, SUN_DEPARTMENTS, QuestionSnapshot } from '../../types';
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
-import { exportToExcel, exportToWord } from '../../utils/exportUtils';
-import { useAuth } from '../../context/AuthContext';
+import {
+  exportToExcel,
+  exportToWord,
+  exportIndividualScriptToWord,
+  exportIndividualScriptToExcel
+} from '../../utils/exportUtils';
+import { capitalizeProper } from '../../utils/studentValidation';
+import { formatLagosDate, formatLagosTime, formatLagosDateTime } from '../../utils/timeUtils';
+import { useAuth, isAuthorizedExaminerEmail } from '../../context/AuthContext';
 
 interface ExamResultsViewProps {
   exam: Exam;
   onBack: () => void;
+  onViewAttendance?: () => void;
 }
 
-export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }) => {
+export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack, onViewAttendance }) => {
   const { user } = useAuth();
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [loading, setLoading] = useState(true);
@@ -34,13 +52,60 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
   const [selectedDepartment, setSelectedDepartment] = useState('All');
   const [sortBy, setSortBy] = useState<'matric_asc' | 'matric_desc' | 'score_desc' | 'score_asc' | 'date_desc'>('matric_asc');
   const [isExportingWord, setIsExportingWord] = useState(false);
+  const [isExportingScriptWord, setIsExportingScriptWord] = useState(false);
+  const [selectedScript, setSelectedScript] = useState<Submission | null>(null);
+  const [showDeleteResultsModal, setShowDeleteResultsModal] = useState(false);
+  const [isDeletingResults, setIsDeletingResults] = useState(false);
+  const [deleteNotification, setDeleteNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  const isSuperAdmin = isAuthorizedExaminerEmail(user?.email);
+  const isCourseLecturer = (exam.lecturerEmail || '').toLowerCase().trim() === (user?.email || '').toLowerCase().trim();
+  const isAuthorized = isSuperAdmin || isCourseLecturer;
+
+  const handleDeleteResults = async () => {
+    if (!user) return;
+    setIsDeletingResults(true);
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/exam/${exam.id}/delete-results`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to delete examination results.');
+      }
+      setSubmissions([]);
+      setShowDeleteResultsModal(false);
+      setDeleteNotification({
+        type: 'success',
+        message: data.message || `All student results for ${exam.courseCode} have been deleted successfully.`
+      });
+      setTimeout(() => setDeleteNotification(null), 5000);
+    } catch (err: any) {
+      console.error('Delete results error:', err);
+      setDeleteNotification({
+        type: 'error',
+        message: `Failed to delete examination results: ${err.message || 'Operation failed'}`
+      });
+      setTimeout(() => setDeleteNotification(null), 6000);
+    } finally {
+      setIsDeletingResults(false);
+    }
+  };
 
   useEffect(() => {
     fetchSubmissions();
   }, [exam.id, user]);
 
   const fetchSubmissions = async () => {
-    if (!user || (user.email || '').toLowerCase().trim() !== 'sunsmartcbt@gmail.com') return;
+    if (!user || !isAuthorized) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const q = query(collection(db, 'submissions'), where('examId', '==', exam.id));
@@ -109,6 +174,28 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
     }
   };
 
+  if (!isAuthorized) {
+    return (
+      <div className="max-w-2xl mx-auto py-16 px-4 text-center">
+        <div className="w-16 h-16 rounded-2xl bg-red-950/60 border border-red-500/50 flex items-center justify-center mx-auto mb-4 text-red-400">
+          <ShieldAlert className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-bold text-[#F0F9F3]">Access Restricted</h2>
+        <p className="text-xs text-[#ADCDBA] mt-2 max-w-md mx-auto">
+          You are not authorized to access individual scripts or examination results for {exam.courseCode} ({exam.courseTitle}).
+          Only the authorized course lecturer ({exam.lecturerName || 'Course Examiner'}) or the central university administrator may view these records.
+        </p>
+        <button
+          onClick={onBack}
+          className="mt-6 inline-flex items-center gap-2 px-4 py-2 bg-[#0A2419] hover:bg-[#0E3324] text-[#D6BF62] hover:text-[#F0F9F3] border border-[#D6BF62]/40 rounded-xl text-xs font-bold transition cursor-pointer"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          <span>Return to Examinations</span>
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-6xl mx-auto pb-16 px-4 sm:px-6">
       {/* Top Bar Navigation */}
@@ -121,8 +208,20 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
           <span>Back to Examinations</span>
         </button>
 
-        {/* Export Buttons */}
-        <div className="flex items-center gap-3 w-full sm:w-auto">
+        {/* Export & Action Buttons */}
+        <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+          {onViewAttendance && (
+            <button
+              type="button"
+              onClick={onViewAttendance}
+              className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-[#0E623B]/30 hover:bg-[#0E623B]/60 text-[#F0F9F3] border border-[#D6BF62]/50 font-bold text-xs rounded-xl shadow-sm transition cursor-pointer"
+              title="Switch to Examination Attendance Register"
+            >
+              <ClipboardCheck className="w-4 h-4 text-[#D6BF62]" />
+              <span>Attendance Register</span>
+            </button>
+          )}
+
           <button
             onClick={() => exportToExcel(exam, filteredSubmissions)}
             disabled={filteredSubmissions.length === 0}
@@ -140,8 +239,46 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
             <FileText className="w-4 h-4 text-[#D6BF62]" />
             <span>{isExportingWord ? 'Generating Word Doc...' : 'Export Official Word Report (.docx)'}</span>
           </button>
+
+          {/* Delete Results Action (Separate from Delete Exam) */}
+          <button
+            type="button"
+            onClick={() => setShowDeleteResultsModal(true)}
+            disabled={submissions.length === 0}
+            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-[#2A0808]/70 hover:bg-[#3D0C0C] text-red-300 hover:text-white border border-red-500/40 font-bold text-xs rounded-xl shadow-sm transition disabled:opacity-40 cursor-pointer"
+            title="Delete all student submissions, answers and results for this examination only"
+          >
+            <Eraser className="w-4 h-4 text-red-400" />
+            <span>Delete Results</span>
+          </button>
         </div>
       </div>
+
+      {/* Action Notification */}
+      {deleteNotification && (
+        <div
+          className={`mb-6 p-4 rounded-xl border flex items-center justify-between gap-3 text-xs font-semibold animate-fadeIn ${
+            deleteNotification.type === 'success'
+              ? 'bg-[#061C13] border-[#10B981] text-[#10B981]'
+              : 'bg-[#2A0808] border-red-500 text-red-300'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {deleteNotification.type === 'success' ? (
+              <Check className="w-4 h-4 shrink-0" />
+            ) : (
+              <ShieldAlert className="w-4 h-4 shrink-0 text-red-400" />
+            )}
+            <span>{deleteNotification.message}</span>
+          </div>
+          <button
+            onClick={() => setDeleteNotification(null)}
+            className="p-1 hover:opacity-80 rounded cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Header Banner */}
       <div className="bg-[#061C13] rounded-2xl shadow-xl border border-[#789981]/30 p-6 sm:p-8 mb-6">
@@ -156,8 +293,24 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
             <h1 className="text-xl sm:text-2xl font-extrabold text-[#F0F9F3] mt-1">
               {exam.courseTitle}
             </h1>
-            <p className="text-xs text-[#ADCDBA] mt-1">
-              Examination Results & Automated Evaluation Records (Citadel for Champions)
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-2 text-xs text-[#ADCDBA]">
+              <div className="flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-[#D6BF62]" />
+                <span>Course Lecturer: <strong className="text-[#F0F9F3] font-bold">{exam.lecturerName || 'Not specified'}</strong></span>
+              </div>
+              <span className="text-[#789981]/50 hidden sm:inline">•</span>
+              <div className="flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-[#D6BF62]" />
+                <span>Date: <strong className="text-[#F0F9F3]">{formatLagosDate(exam.startDate)}</strong></span>
+              </div>
+              <span className="text-[#789981]/50 hidden sm:inline">•</span>
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-[#D6BF62]" />
+                <span>Window: <strong className="text-[#F0F9F3]">{formatLagosTime(exam.startDate)} – {formatLagosTime(exam.endDate)} (WAT)</strong></span>
+              </div>
+            </div>
+            <p className="text-[11px] text-[#789981] mt-1.5">
+              Official Examination Results & Candidate Evaluation Registry • Sports University of Nigeria
             </p>
           </div>
 
@@ -332,6 +485,7 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
                   <th className="py-3.5 px-4 text-center">Score</th>
                   <th className="py-3.5 px-4 text-center">Percentage</th>
                   <th className="py-3.5 px-4 text-center">Grade</th>
+                  <th className="py-3.5 px-4 text-center">Action</th>
                   <th className="py-3.5 px-4 text-right">Submitted At</th>
                 </tr>
               </thead>
@@ -344,8 +498,8 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
                       <td className="py-3.5 px-4 font-mono font-bold text-[#D6BF62]">
                         {sub.matricNumber}
                       </td>
-                      <td className="py-3.5 px-4 font-semibold text-[#F0F9F3]">{sub.fullName}</td>
-                      <td className="py-3.5 px-4 text-[#ADCDBA]">{sub.department}</td>
+                      <td className="py-3.5 px-4 font-semibold text-[#F0F9F3]">{capitalizeProper(sub.fullName)}</td>
+                      <td className="py-3.5 px-4 text-[#ADCDBA]">{capitalizeProper(sub.department)}</td>
                       <td className="py-3.5 px-4 text-center">
                         <span
                           className={`inline-block px-2.5 py-0.5 rounded text-xs font-bold font-mono ${
@@ -398,8 +552,18 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
                           <span className="text-red-400">F</span>
                         )}
                       </td>
+                      <td className="py-3.5 px-4 text-center">
+                        <button
+                          onClick={() => setSelectedScript(sub)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#0A2419] hover:bg-[#0E3324] text-[#D6BF62] hover:text-[#F0F9F3] border border-[#D6BF62]/40 hover:border-[#D6BF62] text-xs font-bold rounded-lg transition cursor-pointer shadow-sm"
+                          title="View Individual Examination Script"
+                        >
+                          <Eye className="w-3.5 h-3.5" />
+                          <span>View Individual Script</span>
+                        </button>
+                      </td>
                       <td className="py-3.5 px-4 text-right text-[#789981] font-mono text-[11px]">
-                        {new Date(sub.submittedAt).toLocaleDateString()} {new Date(sub.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {formatLagosDateTime(sub.submittedAt)}
                       </td>
                     </tr>
                   );
@@ -409,6 +573,459 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack }
           </div>
         )}
       </div>
+
+      {/* Individual Candidate Examination Script Modal */}
+      {selectedScript && (() => {
+        // Resolve questions: prefer immutable snapshot, fallback gracefully to exam question bank
+        const scriptQuestions = selectedScript.questionSnapshot && selectedScript.questionSnapshot.length > 0
+          ? selectedScript.questionSnapshot
+          : (exam.questions && exam.questions.length > 0
+            ? exam.questions.map((q, idx) => ({
+                id: q.id || `q_${idx}`,
+                questionNumber: idx + 1,
+                questionText: q.questionText,
+                options: q.options,
+                correctAnswer: q.correctAnswer,
+                isTrueFalse: Boolean(
+                  (q.options && q.options.length === 2 && (q.options[0].toLowerCase() === 'true')) ||
+                  (q as any).isTrueFalse
+                )
+              }))
+            : []);
+
+        const isHistoricalFallback = (!selectedScript.questionSnapshot || selectedScript.questionSnapshot.length === 0) && exam.questions && exam.questions.length > 0;
+
+        let attempted = selectedScript.attemptedCount;
+        let unanswered = selectedScript.unansweredCount;
+        let correct = selectedScript.correctCount;
+        let incorrect = selectedScript.incorrectCount;
+
+        if (attempted === undefined || unanswered === undefined) {
+          attempted = 0;
+          unanswered = 0;
+          correct = 0;
+          incorrect = 0;
+          scriptQuestions.forEach((q) => {
+            const choice = selectedScript.answers ? selectedScript.answers[q.id] : undefined;
+            const isUnans = choice === undefined || choice === null || Number(choice) < 0 || isNaN(Number(choice));
+            if (isUnans) {
+              unanswered! += 1;
+            } else {
+              attempted! += 1;
+              if (Number(choice) === q.correctAnswer) {
+                correct! += 1;
+              } else {
+                incorrect! += 1;
+              }
+            }
+          });
+        }
+
+        const letters = ['A', 'B', 'C', 'D'];
+        const lecturerNameValue = exam.lecturerName || selectedScript.lecturerName || 'Not specified';
+        const isPass = selectedScript.percentage >= 50;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-md overflow-y-auto">
+            <div className="bg-[#061C13] border-2 border-[#D6BF62]/70 rounded-2xl max-w-4xl w-full p-5 sm:p-8 shadow-2xl relative my-6 max-h-[92vh] flex flex-col print-container">
+              {/* Modal Header */}
+              <div className="flex items-start justify-between border-b border-[#789981]/30 pb-4 mb-4 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-[#0E623B] border border-[#D6BF62] flex items-center justify-center text-[#D6BF62] font-black text-lg shadow-md">
+                    SUN
+                  </div>
+                  <div>
+                    <h3 className="text-lg sm:text-xl font-black text-[#F0F9F3]">
+                      Official Candidate Examination Script
+                    </h3>
+                    <p className="text-xs text-[#ADCDBA]">
+                      Sports University of Nigeria • Evaluation & Performance Audit
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 no-print">
+                  <button
+                    onClick={() => exportIndividualScriptToWord(exam, selectedScript)}
+                    className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#0A2419] hover:bg-[#0E3324] text-[#D6BF62] border border-[#D6BF62]/40 rounded-lg text-xs font-bold transition cursor-pointer"
+                    title="Export Script to Microsoft Word"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Word (.docx)</span>
+                  </button>
+                  <button
+                    onClick={() => exportIndividualScriptToExcel(exam, selectedScript)}
+                    className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/40 rounded-lg text-xs font-bold transition cursor-pointer"
+                    title="Export Script to Microsoft Excel"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-[#D6BF62]" />
+                    <span>Excel (.xlsx)</span>
+                  </button>
+                  <button
+                    onClick={() => window.print()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/40 rounded-lg text-xs font-bold transition cursor-pointer"
+                    title="Print Candidate Examination Script"
+                  >
+                    <Printer className="w-3.5 h-3.5 text-[#D6BF62]" />
+                    <span>Print</span>
+                  </button>
+                  <button
+                    onClick={() => setSelectedScript(null)}
+                    className="p-1.5 rounded-lg bg-[#0A2419] text-[#789981] hover:text-[#F0F9F3] hover:bg-[#0E3324] transition cursor-pointer"
+                    title="Close Script View"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Modal Scrollable Body */}
+              <div className="overflow-y-auto space-y-5 pr-1 text-xs">
+                {/* 1. Student and Examination Information (Requirement 2) */}
+                <div className="bg-[#0A2419] p-4 sm:p-5 rounded-xl border border-[#789981]/30 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Student Full Name</span>
+                    <span className="font-extrabold text-[#F0F9F3] text-sm">{capitalizeProper(selectedScript.fullName)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Matriculation Number</span>
+                    <span className="font-mono font-bold text-[#D6BF62] text-sm">{selectedScript.matricNumber}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Department</span>
+                    <span className="font-semibold text-[#ADCDBA]">{capitalizeProper(selectedScript.department)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Sex</span>
+                    <span className="font-mono font-bold text-[#D6BF62]">
+                      {selectedScript.gender === 'M' || selectedScript.gender === 'Male'
+                        ? 'M (Male)'
+                        : selectedScript.gender === 'F' || selectedScript.gender === 'Female'
+                        ? 'F (Female)'
+                        : 'Not recorded'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Course Code</span>
+                    <span className="font-bold text-[#F0F9F3]">{exam.courseCode}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Course Title</span>
+                    <span className="font-semibold text-[#ADCDBA]">{exam.courseTitle}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Course Lecturer's Name</span>
+                    <span className="font-extrabold text-[#D6BF62]">{lecturerNameValue}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Examination Date</span>
+                    <span className="font-bold text-[#F0F9F3]">{exam.startDate ? formatLagosDate(exam.startDate) : 'Not specified'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Examination Starting Time</span>
+                    <span className="font-bold text-[#F0F9F3]">{exam.startDate ? `${formatLagosTime(exam.startDate)} (WAT)` : 'Not specified'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Examination Batch</span>
+                    <span className="font-bold text-[#F0F9F3]">{selectedScript.batch || 'Batch A'}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Submitted At</span>
+                    <span className="font-mono text-[#ADCDBA]">{formatLagosDateTime(selectedScript.submittedAt)}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-[#789981] uppercase font-bold block">Submission Receipt ID</span>
+                    <span className="font-mono text-[#D6BF62] break-all">{selectedScript.submissionReceipt}</span>
+                  </div>
+                </div>
+
+                {/* 2. Performance Summary (Requirement 4) */}
+                <div>
+                  <h4 className="text-xs font-bold text-[#D6BF62] uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                    <Award className="w-3.5 h-3.5" />
+                    <span>Candidate Performance Summary</span>
+                  </h4>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5 text-center">
+                    <div className="bg-[#0A2419] p-3 rounded-xl border border-[#789981]/30">
+                      <span className="text-[10px] text-[#789981] font-bold uppercase block">Total Items</span>
+                      <span className="text-xl font-black text-[#F0F9F3]">{selectedScript.totalQuestions}</span>
+                    </div>
+                    <div className="bg-[#0A2419] p-3 rounded-xl border border-[#789981]/30">
+                      <span className="text-[10px] text-[#789981] font-bold uppercase block">Attempted</span>
+                      <span className="text-xl font-black text-[#ADCDBA]">{attempted}</span>
+                    </div>
+                    <div className="bg-[#0A2419] p-3 rounded-xl border border-[#10B981]/40">
+                      <span className="text-[10px] text-[#10B981] font-bold uppercase block">Correct (✓)</span>
+                      <span className="text-xl font-black text-[#10B981]">{correct}</span>
+                    </div>
+                    <div className="bg-[#0A2419] p-3 rounded-xl border border-red-500/40">
+                      <span className="text-[10px] text-red-400 font-bold uppercase block">Incorrect (✕)</span>
+                      <span className="text-xl font-black text-red-400">{incorrect}</span>
+                    </div>
+                    <div className="bg-[#0A2419] p-3 rounded-xl border border-amber-500/40">
+                      <span className="text-[10px] text-amber-300 font-bold uppercase block">Unanswered (—)</span>
+                      <span className="text-xl font-black text-amber-300">{unanswered}</span>
+                    </div>
+                    <div className="bg-[#0A2419] p-3 rounded-xl border border-[#D6BF62]/50">
+                      <span className="text-[10px] text-[#D6BF62] font-bold uppercase block">Score & Grade</span>
+                      <span className="text-xl font-black text-[#D6BF62]">
+                        {selectedScript.score} <span className="text-xs text-[#789981]">({selectedScript.percentage}%)</span>
+                      </span>
+                      <span className={`block text-[10px] font-bold mt-0.5 ${isPass ? 'text-[#10B981]' : 'text-red-400'}`}>
+                        {isPass ? 'PASSED' : 'FAILED'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Historical fallback warning if needed */}
+                {isHistoricalFallback && (
+                  <div className="p-3 bg-[#0A2419] border border-amber-500/40 rounded-xl text-amber-300 text-xs flex items-center gap-2">
+                    <HelpCircle className="w-4 h-4 shrink-0 text-amber-400" />
+                    <span>
+                      Historical Submission Notice: This candidate record was submitted prior to snapshot storage. Questions are presented from the associated examination bank.
+                    </span>
+                  </div>
+                )}
+
+                {/* 3. Complete Question Record (Requirement 3 & 5) */}
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-xs font-bold text-[#D6BF62] uppercase tracking-wider flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Complete Question Record ({scriptQuestions.length} Items)</span>
+                    </h4>
+                    <span className="text-[11px] text-[#789981]">
+                      Preserved in Candidate Presentation Order
+                    </span>
+                  </div>
+
+                  {scriptQuestions.length === 0 ? (
+                    <div className="p-6 bg-[#0A2419] rounded-xl border border-[#789981]/30 text-center text-[#ADCDBA]">
+                      No preserved question records are available for this examination script.
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {scriptQuestions.map((q, idx) => {
+                        const candidateChoiceIdx = selectedScript.answers ? selectedScript.answers[q.id] : undefined;
+                        const isUnanswered = candidateChoiceIdx === undefined || candidateChoiceIdx === null || Number(candidateChoiceIdx) < 0 || isNaN(Number(candidateChoiceIdx));
+                        const isCorrect = !isUnanswered && Number(candidateChoiceIdx) === q.correctAnswer;
+
+                        const formatChoiceText = (optIdx: number | undefined) => {
+                          if (optIdx === undefined || optIdx === null || optIdx < 0) return 'Unanswered (None)';
+                          if (q.isTrueFalse) {
+                            return optIdx === 0 ? 'True' : 'False';
+                          }
+                          const optText = q.options && q.options[optIdx] ? ` (${q.options[optIdx]})` : '';
+                          return `Option ${letters[optIdx] || optIdx + 1}${optText}`;
+                        };
+
+                        return (
+                          <div key={q.id} className="p-4 bg-[#0A2419] rounded-xl border border-[#789981]/30">
+                            {/* Question Header & Status Indicator */}
+                            <div className="flex items-start justify-between gap-3 mb-2">
+                              <span className="font-extrabold text-[#F0F9F3] text-sm">
+                                Question {idx + 1}. {q.questionText}
+                              </span>
+                              <span
+                                className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold ${
+                                  isCorrect
+                                    ? 'bg-[#0E623B] text-[#10B981] border border-[#10B981]/50'
+                                    : isUnanswered
+                                    ? 'bg-amber-950/60 text-amber-300 border border-amber-500/40'
+                                    : 'bg-red-950/60 text-red-300 border border-red-500/40'
+                                }`}
+                              >
+                                {isCorrect ? '✓ Correct (+1 Mark)' : isUnanswered ? '— Unanswered (0 Marks)' : '✕ Incorrect (0 Marks)'}
+                              </span>
+                            </div>
+
+                            {/* Every Answer Option Presented */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 my-3 pt-2 border-t border-[#789981]/20">
+                              {q.options && q.options.map((optText, optIdx) => {
+                                const isSelected = !isUnanswered && Number(candidateChoiceIdx) === optIdx;
+                                const isThisCorrect = q.correctAnswer === optIdx;
+
+                                return (
+                                  <div
+                                    key={optIdx}
+                                    className={`px-3 py-2 rounded-lg border text-xs flex items-center justify-between ${
+                                      isSelected && isThisCorrect
+                                        ? 'bg-[#0E623B]/50 border-[#10B981] text-[#F0F9F3]'
+                                        : isSelected && !isThisCorrect
+                                        ? 'bg-red-950/50 border-red-500/60 text-red-200'
+                                        : isThisCorrect
+                                        ? 'bg-[#030F0A] border-[#D6BF62]/50 text-[#D6BF62]'
+                                        : 'bg-[#061C13]/60 border-[#789981]/20 text-[#ADCDBA]'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2">
+                                      <span className="w-5 h-5 rounded-full bg-[#030F0A] border border-[#789981]/40 flex items-center justify-center font-bold text-[10px] text-[#D6BF62]">
+                                        {q.isTrueFalse ? (optIdx === 0 ? 'T' : 'F') : letters[optIdx] || optIdx + 1}
+                                      </span>
+                                      <span className="font-medium">{optText}</span>
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      {isSelected && (
+                                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${isCorrect ? 'bg-[#10B981] text-black' : 'bg-red-600 text-white'}`}>
+                                          Student Choice
+                                        </span>
+                                      )}
+                                      {isThisCorrect && (
+                                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#D6BF62] text-black">
+                                          Correct Answer
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* Summary choices line */}
+                            <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs pt-1 border-t border-[#789981]/20">
+                              <span>
+                                Candidate Choice:{' '}
+                                <strong className={isCorrect ? 'text-[#10B981]' : isUnanswered ? 'text-amber-300' : 'text-red-400'}>
+                                  {formatChoiceText(candidateChoiceIdx)}
+                                </strong>
+                              </span>
+                              <span>
+                                Official Correct Answer:{' '}
+                                <strong className="text-[#D6BF62]">
+                                  {formatChoiceText(q.correctAnswer)}
+                                </strong>
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* 4. Lecturer's Signature Section (Requirement 6) */}
+                <div className="bg-[#030F0A] p-6 rounded-xl border border-[#789981]/40 mt-6">
+                  <div className="max-w-md">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#D6BF62] block mb-6">
+                      Lecturer's Signature
+                    </span>
+                    <div className="w-full border-b-2 border-[#F0F9F3] mb-2" />
+                    <p className="text-sm font-bold text-[#F0F9F3]">
+                      {lecturerNameValue}
+                    </p>
+                    <p className="text-xs text-[#ADCDBA]">
+                      Course Lecturer / Chief Examiner
+                    </p>
+                    <p className="text-[11px] text-[#789981] mt-3">
+                      Date: ________________________
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="border-t border-[#789981]/30 pt-4 mt-4 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0 no-print">
+                <span className="text-[11px] text-[#789981]">
+                  Official CBT Evaluation Record • Sports University of Nigeria
+                </span>
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <button
+                    onClick={() => exportIndividualScriptToWord(exam, selectedScript)}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-2 bg-[#0A2419] hover:bg-[#0E3324] text-[#D6BF62] hover:text-[#F0F9F3] border border-[#D6BF62]/40 rounded-xl text-xs font-bold transition cursor-pointer"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Export Word (.docx)</span>
+                  </button>
+                  <button
+                    onClick={() => exportIndividualScriptToExcel(exam, selectedScript)}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-2 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] hover:text-[#F0F9F3] border border-[#789981]/40 rounded-xl text-xs font-bold transition cursor-pointer"
+                  >
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-[#D6BF62]" />
+                    <span>Export Excel (.xlsx)</span>
+                  </button>
+                  <button
+                    onClick={() => window.print()}
+                    className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-2 bg-[#0A2419] hover:bg-[#0E3324] text-[#F0F9F3] border border-[#789981]/40 rounded-xl text-xs font-bold transition cursor-pointer"
+                  >
+                    <Printer className="w-3.5 h-3.5 text-[#D6BF62]" />
+                    <span>Print Script</span>
+                  </button>
+                  <button
+                    onClick={() => setSelectedScript(null)}
+                    className="flex-1 sm:flex-none px-4 py-2 bg-[#0E623B] hover:bg-[#127949] text-[#F0F9F3] text-xs font-bold rounded-xl transition cursor-pointer shadow-md"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* CONFIRM DELETE RESULTS MODAL (SEPARATE FROM DELETE EXAM) */}
+      {showDeleteResultsModal && (
+        <div className="fixed inset-0 z-50 bg-[#030515]/85 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-[#061C13] rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl border border-red-500/50 space-y-5">
+            <div className="w-14 h-14 mx-auto bg-[#2A0808] text-red-400 rounded-2xl flex items-center justify-center border border-red-500/40 shadow-sm">
+              <Eraser className="w-7 h-7" />
+            </div>
+
+            <div className="space-y-3 text-center">
+              <h3 className="text-xl font-black text-[#F0F9F3]">
+                Delete Examination Results?
+              </h3>
+              <p className="text-xs sm:text-sm text-[#ADCDBA] leading-relaxed text-left sm:text-center">
+                This action will permanently delete the student submissions, answers and results associated with this examination. The examination, questions, correct answers and settings will remain unchanged. Student profiles and results from other examinations will not be affected.
+              </p>
+              <div className="bg-[#0A2419] p-3.5 rounded-xl border border-[#789981]/30 text-xs text-left space-y-1">
+                <div className="flex justify-between items-center text-[#ADCDBA]">
+                  <span className="text-[#789981]">Course:</span>
+                  <span className="font-bold text-[#F0F9F3]">{exam.courseCode} — {exam.courseTitle}</span>
+                </div>
+                <div className="flex justify-between items-center text-[#ADCDBA]">
+                  <span className="text-[#789981]">Lecturer:</span>
+                  <span className="font-medium text-[#F0F9F3]">{exam.lecturerName || 'SUN Faculty'}</span>
+                </div>
+                <div className="flex justify-between items-center font-mono">
+                  <span className="text-[#789981] font-sans">Exam ID:</span>
+                  <span className="font-bold text-[#D6BF62]">{exam.id}</span>
+                </div>
+                <div className="flex justify-between items-center text-[#ADCDBA]">
+                  <span className="text-[#789981]">Total Submissions to Delete:</span>
+                  <span className="font-bold text-red-400">{submissions.length}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowDeleteResultsModal(false)}
+                disabled={isDeletingResults}
+                className="flex-1 py-2.5 px-4 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/40 font-bold text-xs sm:text-sm rounded-xl transition disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleDeleteResults}
+                disabled={isDeletingResults}
+                className="flex-1 py-2.5 px-4 bg-red-700 hover:bg-red-600 border border-red-500 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {isDeletingResults ? (
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <Eraser className="w-4 h-4" />
+                    <span>Confirm Delete Results</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

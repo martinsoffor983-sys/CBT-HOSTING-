@@ -23,11 +23,14 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Designated Central Administrator / Examiner Account
+    // Designated Central Administrator / Examiner Account (includes bootstrap runtime admin)
     function isAuthorizedLecturer() {
       return isSignedIn()
         && request.auth.token.email != null
-        && request.auth.token.email.lower() == 'sunsmartcbt@gmail.com';
+        && (
+          request.auth.token.email.lower() == 'sunsmartcbt@gmail.com'
+          || request.auth.token.email.lower() == 'sunsug539@gmail.com'
+        );
     }
 
     function isValidExam(data) {
@@ -85,6 +88,20 @@ service cloud.firestore {
         && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'answers', 'lastSavedAt', 'expiresAt', 'autoSubmittedAt', 'autoSubmitReason', 'batch'])
         && incoming().status in ['in_progress', 'submitted'];
       allow delete: if false;
+    }
+
+    // Attendance records: Physical student examination attendance tracking
+    match /attendance_records/{attendanceId} {
+      allow get, list: if isAuthorizedLecturer();
+      allow create, update: if isAuthorizedLecturer() && isValidId(attendanceId);
+      allow delete: if false; // Physical attendance records are permanent and tamper-evident
+    }
+
+    // Audit logs collection: Immutable administrative security logs
+    match /audit_logs/{logId} {
+      allow get, list: if isAuthorizedLecturer();
+      allow create: if isAuthorizedLecturer();
+      allow update, delete: if false;
     }
   }
 }

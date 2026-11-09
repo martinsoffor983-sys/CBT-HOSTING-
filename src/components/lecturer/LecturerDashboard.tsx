@@ -19,14 +19,20 @@ import {
   Shuffle,
   Lock,
   Unlock,
-  X
+  User,
+  Calendar,
+  X,
+  AlertTriangle,
+  Eraser,
+  ClipboardCheck
 } from 'lucide-react';
 import { Exam } from '../../types';
-import { useAuth } from '../../context/AuthContext';
+import { useAuth, isAuthorizedExaminerEmail } from '../../context/AuthContext';
 import { collection, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
 import { ExamEditor } from './ExamEditor';
 import { ExamResultsView } from './ExamResultsView';
+import { ExamAttendanceView } from './ExamAttendanceView';
 import { formatLagosDate, formatLagosTime } from '../../utils/timeUtils';
 
 export const LecturerDashboard: React.FC = () => {
@@ -37,26 +43,28 @@ export const LecturerDashboard: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'all' | 'published' | 'draft' | 'closed'>('all');
 
   // Navigation states inside lecturer portal
-  const [activeView, setActiveView] = useState<'list' | 'create' | 'edit' | 'results'>('list');
+  const [activeView, setActiveView] = useState<'list' | 'create' | 'edit' | 'results' | 'attendance'>('list');
   const [selectedExam, setSelectedExam] = useState<Exam | null>(null);
   const [detailsExam, setDetailsExam] = useState<Exam | null>(null);
 
-  // Delete modal state
+  // Delete modal states
   const [examToDelete, setExamToDelete] = useState<Exam | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [examToDeleteResults, setExamToDeleteResults] = useState<Exam | null>(null);
+  const [isDeletingResults, setIsDeletingResults] = useState(false);
   const [actionNotification, setActionNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   // Copy feedback state (Only Exam ID)
   const [copiedIdExamId, setCopiedIdExamId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (user && isAuthorized && (user.email || '').toLowerCase().trim() === 'sunsmartcbt@gmail.com') {
+    if (user && isAuthorized && isAuthorizedExaminerEmail(user.email)) {
       fetchExams();
     }
   }, [user, isAuthorized]);
 
   const fetchExams = async () => {
-    if (!user || !isAuthorized || (user.email || '').toLowerCase().trim() !== 'sunsmartcbt@gmail.com') {
+    if (!user || !isAuthorized || !isAuthorizedExaminerEmail(user.email)) {
       return;
     }
     setLoading(true);
@@ -132,6 +140,45 @@ export const LecturerDashboard: React.FC = () => {
     }
   };
 
+  const confirmDeleteResults = async () => {
+    if (!examToDeleteResults || !user) return;
+    setIsDeletingResults(true);
+    const targetId = examToDeleteResults.id;
+    const courseCode = examToDeleteResults.courseCode;
+
+    try {
+      const token = await user.getIdToken();
+      const res = await fetch(`/api/exam/${targetId}/delete-results`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        }
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to delete examination results.');
+      }
+
+      setActionNotification({
+        type: 'success',
+        message: data.message || `Results for ${courseCode} (${targetId}) have been permanently deleted.`
+      });
+      setTimeout(() => setActionNotification(null), 5000);
+      setExamToDeleteResults(null);
+    } catch (err: any) {
+      console.error('Delete results error:', err);
+      setActionNotification({
+        type: 'error',
+        message: `Failed to delete examination results: ${err.message || 'Operation failed'}`
+      });
+      setTimeout(() => setActionNotification(null), 6000);
+    } finally {
+      setIsDeletingResults(false);
+    }
+  };
+
   const handleToggleStatus = async (exam: Exam) => {
     const nextStatus = exam.status === 'published' ? 'closed' : 'published';
     try {
@@ -202,6 +249,23 @@ export const LecturerDashboard: React.FC = () => {
           setActiveView('list');
           setSelectedExam(null);
         }}
+        onViewAttendance={() => {
+          setActiveView('attendance');
+        }}
+      />
+    );
+  }
+
+  if (activeView === 'attendance' && selectedExam) {
+    return (
+      <ExamAttendanceView
+        exam={selectedExam}
+        allExams={exams}
+        onSelectExam={(nextExam) => setSelectedExam(nextExam)}
+        onBack={() => {
+          setActiveView('list');
+          setSelectedExam(null);
+        }}
       />
     );
   }
@@ -241,16 +305,38 @@ export const LecturerDashboard: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={() => {
-            setSelectedExam(null);
-            setActiveView('create');
-          }}
-          className="flex items-center gap-2 px-5 py-2.5 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-bold text-sm rounded-xl shadow-lg hover:shadow-[#0E623B]/30 transition transform active:scale-95 cursor-pointer"
-        >
-          <Plus className="w-4 h-4 text-[#D6BF62]" />
-          <span>Create Examination</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => {
+              if (exams.length > 0) {
+                const target = exams.find((e) => e.status === 'published') || exams[0];
+                setSelectedExam(target);
+                setActiveView('attendance');
+              } else {
+                setActionNotification({
+                  type: 'error',
+                  message: 'No examinations available to manage attendance. Please create an examination first.'
+                });
+              }
+            }}
+            className="flex items-center gap-2 px-4 py-2.5 bg-[#0A2419] hover:bg-[#0E3324] border border-[#D6BF62]/50 text-[#F0F9F3] font-bold text-sm rounded-xl shadow-md transition transform active:scale-95 cursor-pointer"
+            title="Open Examination Attendance Register"
+          >
+            <ClipboardCheck className="w-4 h-4 text-[#D6BF62]" />
+            <span>Examination Attendance</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setSelectedExam(null);
+              setActiveView('create');
+            }}
+            className="flex items-center gap-2 px-5 py-2.5 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-bold text-sm rounded-xl shadow-lg hover:shadow-[#0E623B]/30 transition transform active:scale-95 cursor-pointer"
+          >
+            <Plus className="w-4 h-4 text-[#D6BF62]" />
+            <span>Create Examination</span>
+          </button>
+        </div>
       </div>
 
       {/* Action / Notification Banner */}
@@ -458,7 +544,11 @@ export const LecturerDashboard: React.FC = () => {
                     {exam.courseTitle}
                   </h3>
 
-                  <div className="flex flex-wrap items-center gap-4 text-xs text-[#ADCDBA] pt-0.5">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[#ADCDBA] pt-1">
+                    <span className="flex items-center gap-1 font-medium">
+                      <User className="w-3.5 h-3.5 text-[#D6BF62]" />
+                      Lecturer: <span className="text-[#F0F9F3] font-semibold">{exam.lecturerName || 'Not specified'}</span>
+                    </span>
                     <span className="flex items-center gap-1 font-medium">
                       <Clock className="w-3.5 h-3.5 text-[#D6BF62]" />
                       {exam.durationMinutes} Minutes
@@ -467,9 +557,12 @@ export const LecturerDashboard: React.FC = () => {
                       <Layers className="w-3.5 h-3.5 text-[#D6BF62]" />
                       {exam.questionsCount || 0} Questions
                     </span>
-                    <span className="text-[#789981]">
-                      Created: {new Date(exam.createdAt).toLocaleDateString()}
-                    </span>
+                    {exam.startDate && (
+                      <span className="flex items-center gap-1 font-medium text-[11px]">
+                        <Calendar className="w-3.5 h-3.5 text-[#D6BF62]" />
+                        Date: <span className="text-[#F0F9F3]">{formatLagosDate(exam.startDate)}</span> • Window: <span className="text-[#ADCDBA]">{formatLagosTime(exam.startDate)} – {formatLagosTime(exam.endDate)} (WAT)</span>
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -504,6 +597,20 @@ export const LecturerDashboard: React.FC = () => {
                     </>
                   ) : (
                     <>
+                      {/* Attendance Register */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedExam(exam);
+                          setActiveView('attendance');
+                        }}
+                        className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#0E623B]/30 hover:bg-[#0E623B]/60 text-[#F0F9F3] border border-[#D6BF62]/50 rounded-xl text-xs font-bold transition cursor-pointer shadow-sm"
+                        title="Manage physical examination attendance, candidate sign-in & sign-out"
+                      >
+                        <ClipboardCheck className="w-3.5 h-3.5 text-[#D6BF62]" />
+                        <span>Attendance</span>
+                      </button>
+
                       {/* Results View */}
                       <button
                         type="button"
@@ -545,6 +652,17 @@ export const LecturerDashboard: React.FC = () => {
                         {exam.status === 'published' ? <Lock className="w-3.5 h-3.5 text-[#789981]" /> : <Unlock className="w-3.5 h-3.5 text-[#10B981]" />}
                         <span>{exam.status === 'published' ? 'Close' : 'Reopen'}</span>
                       </button>
+
+                      {/* Delete Results Action (SEPARATE FROM DELETE EXAM) */}
+                      <button
+                        type="button"
+                        onClick={() => setExamToDeleteResults(exam)}
+                        className="flex items-center gap-1.5 px-3 py-2 bg-[#2A0808]/60 hover:bg-[#3D0C0C] text-red-300 hover:text-white border border-red-500/40 rounded-xl text-xs font-bold transition cursor-pointer shadow-sm"
+                        title="Delete student submissions, answers and results for this examination only"
+                      >
+                        <Eraser className="w-3.5 h-3.5 text-red-400" />
+                        <span>Delete Results</span>
+                      </button>
                     </>
                   )}
 
@@ -553,7 +671,7 @@ export const LecturerDashboard: React.FC = () => {
                     type="button"
                     onClick={() => setExamToDelete(exam)}
                     className="p-2 text-[#789981] hover:text-red-400 hover:bg-[#2A0808] rounded-xl transition border border-transparent hover:border-red-500/30 cursor-pointer"
-                    title="Delete Examination"
+                    title="Delete Examination (Entire Course Definition)"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -645,6 +763,67 @@ export const LecturerDashboard: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* CONFIRM DELETE RESULTS MODAL (SEPARATE FROM DELETE EXAM) */}
+      {examToDeleteResults && (
+        <div className="fixed inset-0 z-50 bg-[#030515]/85 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-[#061C13] rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl border border-red-500/50 space-y-5">
+            <div className="w-14 h-14 mx-auto bg-[#2A0808] text-red-400 rounded-2xl flex items-center justify-center border border-red-500/40 shadow-sm">
+              <Eraser className="w-7 h-7" />
+            </div>
+
+            <div className="space-y-3 text-center">
+              <h3 className="text-xl font-black text-[#F0F9F3]">
+                Delete Examination Results?
+              </h3>
+              <p className="text-xs sm:text-sm text-[#ADCDBA] leading-relaxed text-left sm:text-center">
+                This action will permanently delete the student submissions, answers and results associated with this examination. The examination, questions, correct answers and settings will remain unchanged. Student profiles and results from other examinations will not be affected.
+              </p>
+              <div className="bg-[#0A2419] p-3.5 rounded-xl border border-[#789981]/30 text-xs text-left space-y-1">
+                <div className="flex justify-between items-center text-[#ADCDBA]">
+                  <span className="text-[#789981]">Course:</span>
+                  <span className="font-bold text-[#F0F9F3]">{examToDeleteResults.courseCode} — {examToDeleteResults.courseTitle}</span>
+                </div>
+                <div className="flex justify-between items-center text-[#ADCDBA]">
+                  <span className="text-[#789981]">Lecturer:</span>
+                  <span className="font-medium text-[#F0F9F3]">{examToDeleteResults.lecturerName || 'SUN Faculty'}</span>
+                </div>
+                <div className="flex justify-between items-center font-mono">
+                  <span className="text-[#789981] font-sans">Exam ID:</span>
+                  <span className="font-bold text-[#D6BF62]">{examToDeleteResults.id}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setExamToDeleteResults(null)}
+                disabled={isDeletingResults}
+                className="flex-1 py-2.5 px-4 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/40 font-bold text-xs sm:text-sm rounded-xl transition disabled:opacity-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteResults}
+                disabled={isDeletingResults}
+                className="flex-1 py-2.5 px-4 bg-red-700 hover:bg-red-600 border border-red-500 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md transition flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {isDeletingResults ? (
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <>
+                    <Eraser className="w-4 h-4" />
+                    <span>Confirm Delete Results</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* DETAILS VIEW MODAL */}
       {detailsExam && (

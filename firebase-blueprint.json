@@ -85,6 +85,10 @@
           "type": "string",
           "description": "The lecturer UID owning the exam."
         },
+        "lecturerName": {
+          "type": "string",
+          "description": "The name of the lecturer who prepared the exam."
+        },
         "fullName": {
           "type": "string",
           "description": "Student full name."
@@ -116,6 +120,22 @@
         "percentage": {
           "type": "number",
           "description": "Calculated percentage score."
+        },
+        "attemptedCount": {
+          "type": "number",
+          "description": "Count of attempted questions."
+        },
+        "unansweredCount": {
+          "type": "number",
+          "description": "Count of unanswered questions."
+        },
+        "correctCount": {
+          "type": "number",
+          "description": "Count of correctly answered questions."
+        },
+        "incorrectCount": {
+          "type": "number",
+          "description": "Count of incorrectly answered questions."
         },
         "submittedAt": {
           "type": "string",
@@ -178,6 +198,116 @@
         "durationMinutes",
         "status"
       ]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Immutable administrative audit record for sensitive operations such as examination result deletions.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "description": "Action performed, e.g. DELETE_EXAMINATION_RESULTS."
+        },
+        "examId": {
+          "type": "string",
+          "description": "Target examination identifier."
+        },
+        "courseCode": {
+          "type": "string",
+          "description": "Course code of target examination."
+        },
+        "courseTitle": {
+          "type": "string",
+          "description": "Course title of target examination."
+        },
+        "performedByEmail": {
+          "type": "string",
+          "description": "Email of administrator who executed the action."
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "ISO timestamp of the event."
+        }
+      },
+      "required": [
+        "action",
+        "examId",
+        "performedByEmail",
+        "timestamp"
+      ]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Physical student examination attendance record tracking sign-in and sign-out timestamps independently of result records.",
+      "type": "object",
+      "properties": {
+        "examId": {
+          "type": "string",
+          "description": "Unique identifier of the examination."
+        },
+        "courseCode": {
+          "type": "string",
+          "description": "Course code of the examination."
+        },
+        "courseTitle": {
+          "type": "string",
+          "description": "Title of the examination course."
+        },
+        "matricNumber": {
+          "type": "string",
+          "description": "Candidate matriculation number (Format A or B)."
+        },
+        "fullName": {
+          "type": "string",
+          "description": "Candidate full name in proper title case."
+        },
+        "department": {
+          "type": "string",
+          "description": "Candidate academic department."
+        },
+        "gender": {
+          "type": "string",
+          "enum": ["M", "F", "Not recorded"],
+          "description": "Candidate sex."
+        },
+        "signInTime": {
+          "type": "string",
+          "description": "ISO timestamp when the candidate signed into the examination hall."
+        },
+        "signedInBy": {
+          "type": "string",
+          "description": "Administrator or invigilator email who recorded sign-in."
+        },
+        "signOutTime": {
+          "type": "string",
+          "description": "ISO timestamp when the candidate signed out of the examination hall."
+        },
+        "signedOutBy": {
+          "type": "string",
+          "description": "Administrator or invigilator email who recorded sign-out."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["absent", "signed_in", "signed_out"],
+          "description": "Current physical attendance status."
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last attendance update."
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp of record creation."
+        }
+      },
+      "required": [
+        "examId",
+        "courseCode",
+        "matricNumber",
+        "fullName",
+        "department",
+        "status"
+      ]
     }
   },
   "firestore": {
@@ -192,6 +322,14 @@
     "/exam_sessions/{sessionId}": {
       "schema": "ExamSession",
       "description": "Stores active student sessions for timer and duplicate checks."
+    },
+    "/attendance_records/{attendanceId}": {
+      "schema": "AttendanceRecord",
+      "description": "Stores student examination physical attendance records (sign-in/sign-out)."
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Stores administrative audit entries for security verification."
     },
     "/test/{testId}": {
       "schema": "ExamSession",

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AuthProvider, useAuth } from './context/AuthContext';
+import { AuthProvider, useAuth, isAuthorizedExaminerEmail } from './context/AuthContext';
 import { Header } from './components/Header';
 import { StudentPortal } from './components/student/StudentPortal';
 import { LecturerAuth } from './components/lecturer/LecturerAuth';
@@ -12,7 +12,7 @@ function MainApp() {
   const [isExamActive, setIsExamActive] = useState<boolean>(false);
 
   const isLecturerAuthorized = Boolean(
-    user && isAuthorized && (user.email || '').toLowerCase().trim() === 'sunsmartcbt@gmail.com'
+    user && isAuthorized && isAuthorizedExaminerEmail(user.email)
   );
 
   useEffect(() => {

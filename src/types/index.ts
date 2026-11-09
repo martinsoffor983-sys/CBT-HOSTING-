@@ -1,15 +1,26 @@
 export interface Question {
   id: string;
   questionText: string;
-  options: [string, string, string, string];
-  correctAnswer: number; // 0: A, 1: B, 2: C, 3: D
+  options: [string, string, string, string] | string[];
+  correctAnswer: number; // 0: A (or True), 1: B (or False), 2: C, 3: D
   explanation?: string;
+  _cachedMcqOptions?: string[];
+}
+
+export interface RegisteredCandidate {
+  matricNumber: string;
+  fullName: string;
+  department: string;
+  gender?: 'M' | 'F' | string;
+  registeredAt?: string;
+  addedAt?: string;
 }
 
 export interface Exam {
   id: string;
   lecturerId: string;
   lecturerEmail: string;
+  lecturerName?: string;
   courseCode: string;
   courseTitle: string;
   department: string;
@@ -23,6 +34,7 @@ export interface Exam {
   questions?: Question[];
   randomizationEnabled?: boolean;
   batches?: Record<string, { name: string; questionIds: string[] }>;
+  registeredCandidates?: RegisteredCandidate[];
   createdAt: string;
   updatedAt: string;
 }
@@ -32,6 +44,7 @@ export interface PublicExam {
   courseCode: string;
   courseTitle: string;
   department: string;
+  lecturerName?: string;
   durationMinutes: number;
   startDate: string;
   endDate: string;
@@ -48,7 +61,7 @@ export interface PublicExam {
 export interface SanitizedQuestion {
   id: string;
   questionText: string;
-  options: [string, string, string, string];
+  options: [string, string, string, string] | string[];
 }
 
 export interface StudentInfo {
@@ -58,10 +71,20 @@ export interface StudentInfo {
   gender?: 'M' | 'F' | string;
 }
 
+export interface QuestionSnapshot {
+  id: string;
+  questionNumber: number;
+  questionText: string;
+  options: string[];
+  correctAnswer: number;
+  isTrueFalse?: boolean;
+}
+
 export interface Submission {
   id: string;
   examId: string;
   lecturerId: string;
+  lecturerName?: string;
   fullName: string;
   matricNumber: string;
   department: string;
@@ -75,6 +98,11 @@ export interface Submission {
   submissionReceipt: string;
   batch?: string;
   answers?: Record<string, number>;
+  questionSnapshot?: QuestionSnapshot[];
+  attemptedCount?: number;
+  unansweredCount?: number;
+  correctCount?: number;
+  incorrectCount?: number;
 }
 
 export interface ExamSessionData {
@@ -85,6 +113,28 @@ export interface ExamSessionData {
   questions: SanitizedQuestion[];
   exam: PublicExam;
   batch?: string;
+}
+
+export interface AttendanceRecord {
+  id: string;
+  examId: string;
+  courseCode: string;
+  courseTitle: string;
+  matricNumber: string;
+  fullName: string;
+  department: string;
+  gender: 'M' | 'F' | string;
+  signInTime: string | null;
+  signedInBy: string | null;
+  signOutTime: string | null;
+  signedOutBy: string | null;
+  status: 'absent' | 'signed_in' | 'signed_out';
+  submissionStatus?: 'not_started' | 'in_progress' | 'submitted';
+  submittedAt?: string | null;
+  submissionReceipt?: string | null;
+  notes?: string;
+  updatedAt: string;
+  createdAt: string;
 }
 
 export const SUN_DEPARTMENTS = [

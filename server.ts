@@ -14,7 +14,10 @@ import {
   where,
   getDocs,
   updateDoc,
-  deleteDoc
+  deleteDoc,
+  runTransaction,
+  writeBatch,
+  addDoc
 } from 'firebase/firestore';
 import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
 import { TimerEnforcementManager } from './src/server/timerEnforcement.ts';
@@ -26,6 +29,13 @@ import {
   evaluateExamAccess,
   LAGOS_TIMEZONE
 } from './src/utils/timeUtils.ts';
+import {
+  validateMatricNumber,
+  capitalizeProper,
+  detectBatchMatricDuplicates,
+  isAnswerCorrect,
+  validateAndReportCandidateBatch
+} from './src/utils/studentValidation.ts';
 
 dotenv.config();
 
@@ -34,6 +44,10 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
+
+// In-flight mutex locks to prevent simultaneous duplicate submissions and registrations
+const inFlightSubmissionLocks = new Set<string>();
+const inFlightRegistrationLocks = new Set<string>();
 
 // Initialize Firebase for server-side operations (support env overrides while keeping default config)
 const effectiveFirebaseConfig = {
@@ -72,7 +86,11 @@ app.get('/api/health', (_req: Request, res: Response) => {
   });
 });
 
-// Designated Single Authorized Lecturer Account
+// Designated Authorized Lecturer Accounts
+export const AUTHORIZED_LECTURER_EMAILS = [
+  'sunsmartcbt@gmail.com',
+  'sunsug539@gmail.com'
+];
 export const AUTHORIZED_LECTURER_EMAIL = 'sunsmartcbt@gmail.com';
 
 // Helper to decode JWT payload supporting both base64url and base64
@@ -139,7 +157,7 @@ export function verifyLecturerToken(req: Request): { authorized: boolean; email?
       ''
     ).toLowerCase().trim();
 
-    if (email !== AUTHORIZED_LECTURER_EMAIL) {
+    if (!AUTHORIZED_LECTURER_EMAILS.includes(email)) {
       return { authorized: false, error: `Access Denied: Account (${email || 'unknown'}) is not authorized as the university examiner.` };
     }
 
@@ -178,6 +196,616 @@ app.delete('/api/exam/:examId', async (req: Request, res: Response): Promise<voi
   } catch (err: any) {
     console.error('Delete examination error:', err);
     res.status(500).json({ error: err?.message || 'Failed to delete examination.' });
+  }
+});
+
+// Delete Examination Results Only (Protected - Authorized Administrator Only)
+// Permanently deletes student submissions, answers, scores, and session attempts for this exam only.
+// The examination, questions, correct answers, settings, duration, and publication status remain completely intact.
+app.post('/api/exam/:examId/delete-results', async (req: Request, res: Response): Promise<void> => {
+  try {
+    // 1. Strict Server-Side Authorization Guard
+    const authCheck = verifyLecturerToken(req);
+    if (!authCheck.authorized) {
+      res.status(401).json({ error: authCheck.error || 'Access Denied: Administrator authorization required to delete examination results.' });
+      return;
+    }
+
+    // 2. Validate Examination ID on Server
+    const { examId } = req.params;
+    const cleanId = (examId || '').trim();
+    if (!cleanId) {
+      res.status(400).json({ error: 'Valid examination ID required.' });
+      return;
+    }
+
+    const examDocRef = doc(db, 'exams', cleanId);
+    const examSnap = await getDoc(examDocRef);
+    if (!examSnap.exists()) {
+      res.status(404).json({ error: `Examination ${cleanId} not found in database.` });
+      return;
+    }
+    const examData = examSnap.data();
+
+    // 3. Identify all dependent result records belonging exclusively to this examination
+    const subsQuery = query(collection(db, 'submissions'), where('examId', '==', cleanId));
+    const subsSnap = await getDocs(subsQuery);
+
+    const sessionsQuery = query(collection(db, 'exam_sessions'), where('examId', '==', cleanId));
+    const sessionsSnap = await getDocs(sessionsQuery);
+
+    let deletedSubmissionsCount = 0;
+    let deletedSessionsCount = 0;
+
+    // 4. Safe Database Deletion: Batched writes for submissions
+    const subDocs = subsSnap.docs;
+    for (let i = 0; i < subDocs.length; i += 400) {
+      const chunk = subDocs.slice(i, i + 400);
+      const batch = writeBatch(db);
+      chunk.forEach((docSnap) => {
+        batch.delete(docSnap.ref);
+        deletedSubmissionsCount++;
+      });
+      await batch.commit();
+    }
+
+    // 5. Safe Database Deletion: Batched writes for active/past exam sessions
+    const sessionDocs = sessionsSnap.docs;
+    for (let i = 0; i < sessionDocs.length; i += 400) {
+      const chunk = sessionDocs.slice(i, i + 400);
+      const batch = writeBatch(db);
+      chunk.forEach((docSnap) => {
+        batch.delete(docSnap.ref);
+        deletedSessionsCount++;
+      });
+      await batch.commit();
+    }
+
+    // 6. Update examination timestamp (preserving registered candidates roster, attendance records, questions, options, settings, and duration)
+    await updateDoc(examDocRef, {
+      updatedAt: new Date().toISOString()
+    });
+
+    // 7. Evict in-memory timer tracking sessions for this exam
+    timerManager.clearSessionsForExam(cleanId);
+
+    // 8. Record audit log entry in audit_logs collection
+    try {
+      await addDoc(collection(db, 'audit_logs'), {
+        action: 'DELETE_EXAMINATION_RESULTS',
+        examId: cleanId,
+        courseCode: examData.courseCode || 'N/A',
+        courseTitle: examData.courseTitle || 'N/A',
+        lecturerName: examData.lecturerName || 'Not specified',
+        performedByEmail: authCheck.email,
+        performedByUid: authCheck.uid || null,
+        deletedSubmissionsCount,
+        deletedSessionsCount,
+        timestamp: new Date().toISOString()
+      });
+    } catch (auditErr) {
+      console.warn('Could not record audit log entry:', auditErr);
+    }
+
+    res.json({
+      success: true,
+      message: `Results for examination ${examData.courseCode} (${cleanId}) have been permanently deleted. ${deletedSubmissionsCount} submission(s) and ${deletedSessionsCount} session(s) removed. The examination and questions remain unchanged.`,
+      examId: cleanId,
+      courseCode: examData.courseCode,
+      deletedSubmissionsCount,
+      deletedSessionsCount
+    });
+  } catch (err: any) {
+    console.error('Delete examination results error:', err);
+    res.status(500).json({ error: err?.message || 'Failed to delete examination results.' });
+  }
+});
+
+// ==============================================================================
+// PHASE 3A: EXAMINATION ATTENDANCE MANAGEMENT SYSTEM ENDPOINTS
+// ==============================================================================
+
+// 1. Get Attendance Register & Summary Statistics for an Examination
+app.get('/api/exam/:examId/attendance', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authCheck = verifyLecturerToken(req);
+    if (!authCheck.authorized) {
+      res.status(401).json({ error: authCheck.error || 'Access Denied: Lecturer authorization required.' });
+      return;
+    }
+
+    const { examId } = req.params;
+    const cleanExamId = (examId || '').trim();
+    if (!cleanExamId) {
+      res.status(400).json({ error: 'Valid examination ID required.' });
+      return;
+    }
+
+    const examDoc = await getDoc(doc(db, 'exams', cleanExamId));
+    if (!examDoc.exists()) {
+      res.status(404).json({ error: `Examination ${cleanExamId} not found.` });
+      return;
+    }
+    const examData = examDoc.data();
+
+    // 1. Fetch registered candidates from exam document
+    const roster: any[] = Array.isArray(examData.registeredCandidates) ? examData.registeredCandidates : [];
+
+    // 2. Fetch existing physical attendance records
+    const attendanceQuery = query(collection(db, 'attendance_records'), where('examId', '==', cleanExamId));
+    const attendanceSnap = await getDocs(attendanceQuery);
+    const attendanceMap = new Map<string, any>();
+    attendanceSnap.forEach((d) => {
+      const data = d.data();
+      if (data.matricNumber) {
+        attendanceMap.set(String(data.matricNumber).trim().toUpperCase(), { ...data, id: d.id });
+      }
+    });
+
+    // 3. Fetch submissions to display real submission status
+    const subsQuery = query(collection(db, 'submissions'), where('examId', '==', cleanExamId));
+    const subsSnap = await getDocs(subsQuery);
+    const submissionsMap = new Map<string, any>();
+    subsSnap.forEach((d) => {
+      const data = d.data();
+      if (data.matricNumber) {
+        submissionsMap.set(String(data.matricNumber).trim().toUpperCase(), data);
+      }
+    });
+
+    // 4. Combine all unique candidates
+    const allMatrics = new Set<string>();
+    roster.forEach((c: any) => {
+      if (c.matricNumber) allMatrics.add(String(c.matricNumber).trim().toUpperCase());
+    });
+    attendanceMap.forEach((_, matric) => allMatrics.add(matric));
+    submissionsMap.forEach((_, matric) => allMatrics.add(matric));
+
+    const attendanceList: any[] = [];
+    allMatrics.forEach((matric) => {
+      const rosterEntry = roster.find((c: any) => String(c.matricNumber).trim().toUpperCase() === matric) || {};
+      const attRecord = attendanceMap.get(matric) || {};
+      const subRecord = submissionsMap.get(matric);
+
+      const fullName = capitalizeProper(attRecord.fullName || rosterEntry.fullName || subRecord?.fullName || 'Candidate');
+      const department = capitalizeProper(attRecord.department || rosterEntry.department || subRecord?.department || examData.department || 'Not Specified');
+      const rawGender = attRecord.gender || rosterEntry.gender || subRecord?.gender || 'Not recorded';
+      const gender = (rawGender === 'M' || String(rawGender).trim().toUpperCase() === 'M' || String(rawGender).trim().toUpperCase() === 'MALE')
+        ? 'M'
+        : (rawGender === 'F' || String(rawGender).trim().toUpperCase() === 'F' || String(rawGender).trim().toUpperCase() === 'FEMALE')
+        ? 'F'
+        : 'Not recorded';
+
+      const signInTime = attRecord.signInTime || null;
+      const signedInBy = attRecord.signedInBy || null;
+      const signOutTime = attRecord.signOutTime || null;
+      const signedOutBy = attRecord.signedOutBy || null;
+
+      let status = attRecord.status || 'absent';
+      if (signOutTime) {
+        status = 'signed_out';
+      } else if (signInTime) {
+        status = 'signed_in';
+      } else {
+        status = 'absent';
+      }
+
+      let submissionStatus: 'not_started' | 'in_progress' | 'submitted' = 'not_started';
+      if (subRecord) {
+        submissionStatus = 'submitted';
+      }
+
+      attendanceList.push({
+        id: attRecord.id || `${cleanExamId}_${matric.replace(/[^a-zA-Z0-9]/g, '_')}`,
+        examId: cleanExamId,
+        courseCode: examData.courseCode,
+        courseTitle: examData.courseTitle,
+        matricNumber: matric,
+        fullName,
+        department,
+        gender,
+        signInTime,
+        signedInBy,
+        signOutTime,
+        signedOutBy,
+        status,
+        submissionStatus,
+        submittedAt: subRecord?.submittedAt || null,
+        submissionReceipt: subRecord?.submissionReceipt || null,
+        score: subRecord?.score,
+        totalQuestions: subRecord?.totalQuestions,
+        percentage: subRecord?.percentage,
+        updatedAt: attRecord.updatedAt || new Date().toISOString(),
+        createdAt: attRecord.createdAt || rosterEntry.registeredAt || new Date().toISOString()
+      });
+    });
+
+    // Sort alphabetically by Matriculation Number
+    attendanceList.sort((a, b) => a.matricNumber.localeCompare(b.matricNumber));
+
+    // Summary statistics calculated strictly from actual records
+    const totalRegistered = attendanceList.length;
+    const totalSignedIn = attendanceList.filter((a) => a.signInTime !== null).length;
+    const totalSignedOut = attendanceList.filter((a) => a.signOutTime !== null).length;
+    const totalCurrentlyInHall = attendanceList.filter((a) => a.signInTime !== null && a.signOutTime === null).length;
+    const totalAbsent = attendanceList.filter((a) => a.signInTime === null).length;
+    const totalSubmitted = attendanceList.filter((a) => a.submissionStatus === 'submitted').length;
+
+    res.json({
+      exam: {
+        id: cleanExamId,
+        courseCode: examData.courseCode,
+        courseTitle: examData.courseTitle,
+        department: examData.department,
+        lecturerName: examData.lecturerName || 'Not specified',
+        startDate: examData.startDate,
+        endDate: examData.endDate,
+        status: examData.status
+      },
+      summary: {
+        totalRegistered,
+        totalSignedIn,
+        totalSignedOut,
+        totalCurrentlyInHall,
+        totalAbsent,
+        totalSubmitted
+      },
+      attendanceList
+    });
+  } catch (error: any) {
+    console.error('Error fetching examination attendance:', error);
+    res.status(500).json({ error: error?.message || 'Failed to retrieve attendance register.' });
+  }
+});
+
+// 2. Record Physical Candidate Sign-In
+app.post('/api/exam/:examId/attendance/sign-in', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authCheck = verifyLecturerToken(req);
+    if (!authCheck.authorized) {
+      res.status(401).json({ error: authCheck.error || 'Access Denied: Lecturer authorization required.' });
+      return;
+    }
+
+    const { examId } = req.params;
+    const { matricNumber, fullName, department, gender } = req.body;
+
+    const cleanExamId = (examId || '').trim();
+    if (!cleanExamId) {
+      res.status(400).json({ error: 'Valid examination ID required.' });
+      return;
+    }
+
+    const examDoc = await getDoc(doc(db, 'exams', cleanExamId));
+    if (!examDoc.exists()) {
+      res.status(404).json({ error: `Examination ${cleanExamId} not found.` });
+      return;
+    }
+    const examData = examDoc.data();
+
+    const matricValidation = validateMatricNumber(matricNumber);
+    if (!matricValidation.isValid) {
+      res.status(400).json({ error: matricValidation.error || 'Invalid matriculation number format.' });
+      return;
+    }
+    const normalizedMatric = matricValidation.normalized;
+
+    const recordId = `${cleanExamId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const recordRef = doc(db, 'attendance_records', recordId);
+    const existingSnap = await getDoc(recordRef);
+
+    // Rule 5: Duplicate attendance actions are prevented
+    if (existingSnap.exists()) {
+      const existingData = existingSnap.data();
+      if (existingData.signInTime) {
+        res.status(400).json({
+          error: `Duplicate sign-in prevented: Student ${normalizedMatric} was already signed in at ${formatLagosTime(existingData.signInTime)} by ${existingData.signedInBy || 'Invigilator'}.`
+        });
+        return;
+      }
+    }
+
+    // Resolve name & details from request, existing roster, or session
+    const roster: any[] = Array.isArray(examData.registeredCandidates) ? examData.registeredCandidates : [];
+    const rosterCandidate = roster.find((c: any) => String(c.matricNumber).trim().toUpperCase() === normalizedMatric);
+
+    const resolvedName = capitalizeProper(fullName || rosterCandidate?.fullName || existingSnap.data()?.fullName || 'Candidate');
+    const resolvedDept = capitalizeProper(department || rosterCandidate?.department || existingSnap.data()?.department || examData.department || 'All Departments');
+    const rawGender = gender || rosterCandidate?.gender || existingSnap.data()?.gender;
+    const resolvedGender = (rawGender === 'M' || String(rawGender).trim().toUpperCase() === 'M' || String(rawGender).trim().toUpperCase() === 'MALE')
+      ? 'M'
+      : (rawGender === 'F' || String(rawGender).trim().toUpperCase() === 'F' || String(rawGender).trim().toUpperCase() === 'FEMALE')
+      ? 'F'
+      : 'Not recorded';
+
+    const nowIso = new Date().toISOString();
+
+    const attendanceData = {
+      id: recordId,
+      examId: cleanExamId,
+      courseCode: examData.courseCode,
+      courseTitle: examData.courseTitle,
+      matricNumber: normalizedMatric,
+      fullName: resolvedName,
+      department: resolvedDept,
+      gender: resolvedGender,
+      signInTime: nowIso,
+      signedInBy: authCheck.email || 'sunsmartcbt@gmail.com',
+      signOutTime: existingSnap.data()?.signOutTime || null,
+      signedOutBy: existingSnap.data()?.signedOutBy || null,
+      status: 'signed_in',
+      updatedAt: nowIso,
+      createdAt: existingSnap.data()?.createdAt || nowIso
+    };
+
+    await setDoc(recordRef, attendanceData, { merge: true });
+
+    // Also ensure candidate is included in exam roster if not already present
+    if (!rosterCandidate) {
+      try {
+        await updateDoc(doc(db, 'exams', cleanExamId), {
+          registeredCandidates: [
+            ...roster,
+            {
+              matricNumber: normalizedMatric,
+              fullName: resolvedName,
+              department: resolvedDept,
+              gender: resolvedGender,
+              addedAt: nowIso
+            }
+          ]
+        });
+      } catch (rErr) {
+        console.warn('Notice updating exam roster on sign-in:', rErr);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Candidate ${resolvedName} (${normalizedMatric}) signed in successfully at ${formatLagosTime(nowIso)} (WAT).`,
+      record: attendanceData
+    });
+  } catch (error: any) {
+    console.error('Error recording sign-in:', error);
+    res.status(500).json({ error: error?.message || 'Failed to record candidate sign-in.' });
+  }
+});
+
+// 3. Record Physical Candidate Sign-Out
+app.post('/api/exam/:examId/attendance/sign-out', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authCheck = verifyLecturerToken(req);
+    if (!authCheck.authorized) {
+      res.status(401).json({ error: authCheck.error || 'Access Denied: Lecturer authorization required.' });
+      return;
+    }
+
+    const { examId } = req.params;
+    const { matricNumber } = req.body;
+
+    const cleanExamId = (examId || '').trim();
+    if (!cleanExamId) {
+      res.status(400).json({ error: 'Valid examination ID required.' });
+      return;
+    }
+
+    const matricValidation = validateMatricNumber(matricNumber);
+    if (!matricValidation.isValid) {
+      res.status(400).json({ error: matricValidation.error || 'Invalid matriculation number format.' });
+      return;
+    }
+    const normalizedMatric = matricValidation.normalized;
+
+    const recordId = `${cleanExamId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const recordRef = doc(db, 'attendance_records', recordId);
+    const existingSnap = await getDoc(recordRef);
+
+    // Rule 6: Students cannot sign out before signing in
+    if (!existingSnap.exists() || !existingSnap.data()?.signInTime) {
+      res.status(400).json({
+        error: `Cannot sign out: Student ${normalizedMatric} has not signed in yet. Physical sign-in is required before sign-out.`
+      });
+      return;
+    }
+
+    const existingData = existingSnap.data();
+
+    // Rule 5: Duplicate attendance actions are prevented
+    if (existingData.signOutTime) {
+      res.status(400).json({
+        error: `Duplicate sign-out prevented: Student ${normalizedMatric} already signed out at ${formatLagosTime(existingData.signOutTime)}.`
+      });
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+
+    const updatedData = {
+      signOutTime: nowIso,
+      signedOutBy: authCheck.email || 'sunsmartcbt@gmail.com',
+      status: 'signed_out',
+      updatedAt: nowIso
+    };
+
+    await updateDoc(recordRef, updatedData);
+
+    res.json({
+      success: true,
+      message: `Candidate ${existingData.fullName || normalizedMatric} signed out successfully at ${formatLagosTime(nowIso)} (WAT).`,
+      record: { ...existingData, ...updatedData }
+    });
+  } catch (error: any) {
+    console.error('Error recording sign-out:', error);
+    res.status(500).json({ error: error?.message || 'Failed to record candidate sign-out.' });
+  }
+});
+
+// 4. Admit / Pre-register Candidate Directly in Attendance Register
+app.post('/api/exam/:examId/attendance/admit', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authCheck = verifyLecturerToken(req);
+    if (!authCheck.authorized) {
+      res.status(401).json({ error: authCheck.error || 'Access Denied: Lecturer authorization required.' });
+      return;
+    }
+
+    const { examId } = req.params;
+    const { matricNumber, fullName, department, gender, autoSignIn = true } = req.body;
+
+    const cleanExamId = (examId || '').trim();
+    if (!cleanExamId) {
+      res.status(400).json({ error: 'Valid examination ID required.' });
+      return;
+    }
+
+    const examDoc = await getDoc(doc(db, 'exams', cleanExamId));
+    if (!examDoc.exists()) {
+      res.status(404).json({ error: `Examination ${cleanExamId} not found.` });
+      return;
+    }
+    const examData = examDoc.data();
+
+    const matricValidation = validateMatricNumber(matricNumber);
+    if (!matricValidation.isValid) {
+      res.status(400).json({ error: matricValidation.error || 'Invalid matriculation number format.' });
+      return;
+    }
+    const normalizedMatric = matricValidation.normalized;
+
+    if (!fullName || typeof fullName !== 'string' || !fullName.trim()) {
+      res.status(400).json({ error: 'Student full name is required.' });
+      return;
+    }
+
+    const cleanedFullName = capitalizeProper(fullName);
+    const cleanedDept = capitalizeProper(department || examData.department || 'All Departments');
+    const resolvedGender = (gender === 'M' || String(gender).trim().toUpperCase() === 'M' || String(gender).trim().toUpperCase() === 'MALE')
+      ? 'M'
+      : (gender === 'F' || String(gender).trim().toUpperCase() === 'F' || String(gender).trim().toUpperCase() === 'FEMALE')
+      ? 'F'
+      : 'Not recorded';
+
+    const nowIso = new Date().toISOString();
+    const recordId = `${cleanExamId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const recordRef = doc(db, 'attendance_records', recordId);
+
+    const recordData = {
+      id: recordId,
+      examId: cleanExamId,
+      courseCode: examData.courseCode,
+      courseTitle: examData.courseTitle,
+      matricNumber: normalizedMatric,
+      fullName: cleanedFullName,
+      department: cleanedDept,
+      gender: resolvedGender,
+      signInTime: autoSignIn ? nowIso : null,
+      signedInBy: autoSignIn ? (authCheck.email || 'sunsmartcbt@gmail.com') : null,
+      signOutTime: null,
+      signedOutBy: null,
+      status: autoSignIn ? 'signed_in' : 'absent',
+      updatedAt: nowIso,
+      createdAt: nowIso
+    };
+
+    await setDoc(recordRef, recordData, { merge: true });
+
+    // Update roster on exam document
+    const roster: any[] = Array.isArray(examData.registeredCandidates) ? examData.registeredCandidates : [];
+    const existsInRoster = roster.some((c: any) => String(c.matricNumber).trim().toUpperCase() === normalizedMatric);
+    if (!existsInRoster) {
+      await updateDoc(doc(db, 'exams', cleanExamId), {
+        registeredCandidates: [
+          ...roster,
+          {
+            matricNumber: normalizedMatric,
+            fullName: cleanedFullName,
+            department: cleanedDept,
+            gender: resolvedGender,
+            addedAt: nowIso
+          }
+        ]
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Candidate ${cleanedFullName} (${normalizedMatric}) successfully admitted and registered for this examination.`,
+      record: recordData
+    });
+  } catch (error: any) {
+    console.error('Error admitting candidate:', error);
+    res.status(500).json({ error: error?.message || 'Failed to admit candidate.' });
+  }
+});
+
+// 5. Attendance Correction / Reset (Audited)
+app.post('/api/exam/:examId/attendance/reset', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const authCheck = verifyLecturerToken(req);
+    if (!authCheck.authorized) {
+      res.status(401).json({ error: authCheck.error || 'Access Denied: Lecturer authorization required.' });
+      return;
+    }
+
+    const { examId } = req.params;
+    const { matricNumber, reason = 'Administrative attendance correction' } = req.body;
+
+    const cleanExamId = (examId || '').trim();
+    const matricValidation = validateMatricNumber(matricNumber);
+    if (!matricValidation.isValid) {
+      res.status(400).json({ error: matricValidation.error || 'Invalid matriculation number.' });
+      return;
+    }
+    const normalizedMatric = matricValidation.normalized;
+
+    const recordId = `${cleanExamId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const recordRef = doc(db, 'attendance_records', recordId);
+    const snap = await getDoc(recordRef);
+
+    if (!snap.exists()) {
+      res.status(404).json({ error: `Attendance record for ${normalizedMatric} not found.` });
+      return;
+    }
+
+    const prevData = snap.data();
+    const nowIso = new Date().toISOString();
+
+    await updateDoc(recordRef, {
+      signInTime: null,
+      signedInBy: null,
+      signOutTime: null,
+      signedOutBy: null,
+      status: 'absent',
+      updatedAt: nowIso
+    });
+
+    // Rule 7: Attendance corrections are audited
+    try {
+      await addDoc(collection(db, 'audit_logs'), {
+        action: 'ATTENDANCE_CORRECTION_RESET',
+        examId: cleanExamId,
+        matricNumber: normalizedMatric,
+        candidateName: prevData.fullName,
+        performedByEmail: authCheck.email,
+        reason,
+        previousState: {
+          signInTime: prevData.signInTime,
+          signOutTime: prevData.signOutTime,
+          status: prevData.status
+        },
+        timestamp: nowIso
+      });
+    } catch (auditErr) {
+      console.warn('Could not record attendance audit log:', auditErr);
+    }
+
+    res.json({
+      success: true,
+      message: `Attendance for ${normalizedMatric} (${prevData.fullName}) has been reset to absent. This correction was logged in audit records.`
+    });
+  } catch (error: any) {
+    console.error('Error resetting attendance:', error);
+    res.status(500).json({ error: error?.message || 'Failed to correct attendance.' });
   }
 });
 
@@ -416,16 +1044,21 @@ app.get('/api/server-time', (_req: Request, res: Response) => {
   });
 });
 
-// Candidate Verification Endpoint (Pre-check duplicate submission and closing time)
+// Candidate Verification Endpoint (Pre-check duplicate submission, access window and eligibility)
 app.post('/api/verify-candidate', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { examId, matricNumber } = req.body;
+    const { examId, matricNumber, fullName, department, gender } = req.body;
     if (!examId || !matricNumber) {
       res.status(400).json({ error: 'Exam ID and Matriculation Number required.' });
       return;
     }
     const cleanExamId = (examId || '').trim();
-    const normalizedMatric = matricNumber.trim().toUpperCase();
+    const matricVal = validateMatricNumber(matricNumber);
+    if (!matricVal.isValid) {
+      res.status(400).json({ error: matricVal.error });
+      return;
+    }
+    const normalizedMatric = matricVal.normalized;
 
     // 1. Fetch exam
     const examDoc = await getDoc(doc(db, 'exams', cleanExamId));
@@ -451,21 +1084,133 @@ app.post('/api/verify-candidate', async (req: Request, res: Response): Promise<v
       return;
     }
 
-    // Rule 6: Check if candidate already submitted
+    // Duplicate Check: Check if session exists and is already submitted for this exam
     const sessionId = `ses_${cleanExamId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const sessionSnap = await getDoc(doc(db, 'exam_sessions', sessionId));
     if (sessionSnap.exists() && sessionSnap.data()?.status === 'submitted') {
       res.status(400).json({
-        error: `Candidate with Matriculation Number ${normalizedMatric} has already submitted this examination. Reopening or retaking this examination is strictly prohibited.`,
+        error: `Duplicate Registration Error: Candidate with Matriculation Number ${normalizedMatric} has already submitted this examination. Reopening or retaking this examination is strictly prohibited.`,
         alreadySubmitted: true
       });
       return;
     }
 
-    res.json({ eligible: true });
+    res.json({
+      eligible: true,
+      matricNumber: normalizedMatric,
+      examId: cleanExamId
+    });
   } catch (err: any) {
     console.error('Candidate verify error:', err);
     res.status(500).json({ error: 'Failed to verify candidate eligibility.' });
+  }
+});
+
+// Candidate Examination Registration Endpoint with Atomic Transaction & Duplicate Detection
+app.post('/api/register-candidate', async (req: Request, res: Response): Promise<void> => {
+  const { examId, matricNumber, fullName, department, gender } = req.body;
+  if (!examId || !matricNumber || !fullName || !department) {
+    res.status(400).json({ error: 'Exam ID, Matriculation Number, Full Name, and Department are required.' });
+    return;
+  }
+  const cleanExamId = (examId || '').trim();
+  const matricVal = validateMatricNumber(matricNumber);
+  if (!matricVal.isValid) {
+    res.status(400).json({ error: matricVal.error });
+    return;
+  }
+  const normalizedMatric = matricVal.normalized;
+  const normalizedFullName = capitalizeProper(fullName || '');
+  const normalizedDept = capitalizeProper(department || '');
+  const cleanGender = (g: any): string => {
+    if (!g) return 'Not recorded';
+    const s = String(g).trim().toUpperCase();
+    if (s === 'M' || s === 'MALE') return 'M';
+    if (s === 'F' || s === 'FEMALE') return 'F';
+    return 'Not recorded';
+  };
+  const resolvedGender = cleanGender(gender);
+
+  // In-flight mutex lock to prevent simultaneous duplicate registrations
+  const lockKey = `${cleanExamId}_${normalizedMatric}`;
+  if (inFlightRegistrationLocks.has(lockKey)) {
+    res.status(409).json({
+      error: `A registration for matriculation number ${normalizedMatric} is currently being processed. Duplicate simultaneous registrations are prevented.`
+    });
+    return;
+  }
+  inFlightRegistrationLocks.add(lockKey);
+
+  try {
+    const examDocRef = doc(db, 'exams', cleanExamId);
+    let isDuplicate = false;
+    let alreadySubmitted = false;
+
+    await runTransaction(db, async (transaction) => {
+      const examSnap = await transaction.get(examDocRef);
+      if (!examSnap.exists()) {
+        throw new Error('Examination record not found.');
+      }
+      const examData = examSnap.data();
+
+      // Check if session exists and is already submitted for this exam
+      const sesId = `ses_${cleanExamId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const sesDocRef = doc(db, 'exam_sessions', sesId);
+      const sesSnap = await transaction.get(sesDocRef);
+      if (sesSnap.exists() && sesSnap.data()?.status === 'submitted') {
+        alreadySubmitted = true;
+        return;
+      }
+
+      const roster: any[] = Array.isArray(examData.registeredCandidates) ? examData.registeredCandidates : [];
+      const existing = roster.some(c => (c.matricNumber || '').trim().toUpperCase() === normalizedMatric);
+      if (existing) {
+        isDuplicate = true;
+        return;
+      }
+
+      // Add new candidate atomically to roster
+      const newCandidate = {
+        matricNumber: normalizedMatric,
+        fullName: normalizedFullName,
+        department: normalizedDept,
+        gender: resolvedGender,
+        registeredAt: new Date().toISOString()
+      };
+
+      transaction.update(examDocRef, {
+        registeredCandidates: [...roster, newCandidate],
+        updatedAt: new Date().toISOString()
+      });
+    });
+
+    if (alreadySubmitted) {
+      res.status(400).json({
+        error: `Duplicate Registration Error: Candidate with Matriculation Number ${normalizedMatric} has already submitted this examination. Reopening or retaking this examination is strictly prohibited.`,
+        alreadySubmitted: true
+      });
+      return;
+    }
+
+    if (isDuplicate) {
+      res.status(400).json({
+        error: `Duplicate Registration Error: Candidate with Matriculation Number ${normalizedMatric} has already been registered for this examination. Duplicate entries within the same examination are strictly prohibited.`,
+        duplicate: true
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      matricNumber: normalizedMatric,
+      examId: cleanExamId,
+      message: `Candidate ${normalizedMatric} successfully registered for examination.`
+    });
+  } catch (err: any) {
+    console.error('Candidate registration error:', err);
+    res.status(500).json({ error: err?.message || 'Failed to register candidate.' });
+  } finally {
+    inFlightRegistrationLocks.delete(lockKey);
   }
 });
 
@@ -490,6 +1235,7 @@ app.get('/api/exams-public', async (_req: Request, res: Response): Promise<void>
         courseCode: data.courseCode,
         courseTitle: data.courseTitle,
         department: data.department,
+        lecturerName: data.lecturerName || 'Not specified',
         durationMinutes: data.durationMinutes,
         startDate: data.startDate,
         endDate: data.endDate,
@@ -562,6 +1308,7 @@ app.get('/api/exam-public/:examId', async (req: Request, res: Response): Promise
       courseCode: data.courseCode || 'N/A',
       courseTitle: data.courseTitle || 'Examination',
       department: data.department || 'All Departments',
+      lecturerName: data.lecturerName || 'Not specified',
       durationMinutes: Number(data.durationMinutes) || 30,
       startDate: data.startDate || null,
       endDate: data.endDate || null,
@@ -580,6 +1327,7 @@ app.get('/api/exam-public/:examId', async (req: Request, res: Response): Promise
 
 // 3. Start Exam & Verify Duplicate Matric Number
 app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> => {
+  let lockKey = '';
   try {
     const { examId, fullName, matricNumber, department, gender } = req.body;
 
@@ -589,7 +1337,24 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
     }
 
     const cleanExamId = (examId || '').trim();
-    const normalizedMatric = matricNumber.trim().toUpperCase();
+    const matricVal = validateMatricNumber(matricNumber);
+    if (!matricVal.isValid) {
+      res.status(400).json({ error: matricVal.error });
+      return;
+    }
+    const normalizedMatric = matricVal.normalized;
+    const normalizedFullName = capitalizeProper(fullName);
+    const normalizedDept = capitalizeProper(department);
+
+    lockKey = `${cleanExamId}_${normalizedMatric}`;
+    if (inFlightRegistrationLocks.has(lockKey)) {
+      res.status(409).json({
+        error: `A registration/session initialization for matriculation number ${normalizedMatric} is currently being processed. Duplicate simultaneous registrations are prevented.`
+      });
+      return;
+    }
+    inFlightRegistrationLocks.add(lockKey);
+
     const cleanGender = (g: any): string => {
       if (!g) return 'Not recorded';
       const s = String(g).trim().toUpperCase();
@@ -630,14 +1395,14 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
 
     const closeTimeMs = access.closeTimeMs;
 
-    // Rule 6: Students who have already submitted must not be allowed to write the same examination again.
+    // Duplicate Check: Check session status for previous submission
     const sessionId = `ses_${cleanExamId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const sessionDocRef = doc(db, 'exam_sessions', sessionId);
     const sessionSnap = await getDoc(sessionDocRef);
 
     if (sessionSnap.exists() && sessionSnap.data()?.status === 'submitted') {
       res.status(400).json({
-        error: `Candidate with Matriculation Number ${normalizedMatric} has already submitted this examination. Reopening or retaking this examination is strictly prohibited.`,
+        error: `Duplicate Registration Error: Candidate with Matriculation Number ${normalizedMatric} has already submitted this examination. Reopening or retaking this examination is strictly prohibited.`,
         alreadySubmitted: true
       });
       return;
@@ -671,8 +1436,8 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
           sessionId,
           examId: cleanExamId,
           matricNumber: normalizedMatric,
-          fullName: fullName.trim(),
-          department,
+          fullName: normalizedFullName,
+          department: normalizedDept,
           gender: sessionGender,
           startedAtIso,
           durationMinutes,
@@ -720,8 +1485,8 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
       await setDoc(sessionDocRef, {
         examId: cleanExamId,
         matricNumber: normalizedMatric,
-        fullName: fullName.trim(),
-        department,
+        fullName: normalizedFullName,
+        department: normalizedDept,
         gender: sessionGender,
         startedAt: startedAtIso,
         durationMinutes,
@@ -730,6 +1495,28 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
         status: 'in_progress',
         batch: assignedBatch
       });
+
+      // Maintain candidate roster on exam record
+      try {
+        const roster: any[] = Array.isArray(examData.registeredCandidates) ? examData.registeredCandidates : [];
+        const isAlreadyInRoster = roster.some(c => (c.matricNumber || '').trim().toUpperCase() === normalizedMatric);
+        if (!isAlreadyInRoster) {
+          await updateDoc(doc(db, 'exams', cleanExamId), {
+            registeredCandidates: [
+              ...roster,
+              {
+                matricNumber: normalizedMatric,
+                fullName: normalizedFullName,
+                department: normalizedDept,
+                gender: sessionGender,
+                registeredAt: startedAtIso
+              }
+            ]
+          });
+        }
+      } catch (rosterErr) {
+        console.warn('Could not update exam roster on start-exam:', rosterErr);
+      }
     }
 
     // Register with Server-Side Timer Enforcement Manager (Official closing time priority enforced)
@@ -737,8 +1524,8 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
       sessionId,
       examId: cleanExamId,
       matricNumber: normalizedMatric,
-      fullName: fullName.trim(),
-      department,
+      fullName: normalizedFullName,
+      department: normalizedDept,
       gender: sessionGender,
       startedAtIso,
       durationMinutes,
@@ -797,6 +1584,7 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
         courseCode: examData.courseCode,
         courseTitle: examData.courseTitle,
         department: examData.department,
+        lecturerName: examData.lecturerName || 'Not specified',
         durationMinutes,
         startDate: examData.startDate,
         endDate: examData.endDate,
@@ -810,6 +1598,10 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
   } catch (error: any) {
     console.error('Error starting examination:', error);
     res.status(500).json({ error: error?.message || 'Failed to initialize examination session.' });
+  } finally {
+    if (lockKey) {
+      inFlightRegistrationLocks.delete(lockKey);
+    }
   }
 });
 
@@ -873,6 +1665,7 @@ app.post('/api/save-progress', async (req: Request, res: Response): Promise<void
             matricNumber: autoResult.matricNumber,
             courseCode: autoResult.courseCode,
             courseTitle: autoResult.courseTitle,
+            lecturerName: autoResult.lecturerName || 'Not specified',
             totalQuestions: autoResult.totalQuestions
           });
           return;
@@ -1025,16 +1818,32 @@ app.post('/api/auto-submit', async (req: Request, res: Response): Promise<void> 
 
 // 4. Submit Exam & Automated Server-Side Grading
 app.post('/api/submit-exam', async (req: Request, res: Response): Promise<void> => {
+  const { examId, sessionId, fullName, matricNumber, department, gender, answers = {} } = req.body;
+
+  if (!examId || !matricNumber || !fullName || !department) {
+    res.status(400).json({ error: 'Missing candidate details for examination submission.' });
+    return;
+  }
+
+  // Strict matriculation format validation
+  const matricVal = validateMatricNumber(matricNumber);
+  if (!matricVal.isValid) {
+    res.status(400).json({ error: matricVal.error });
+    return;
+  }
+  const normalizedMatric = matricVal.normalized;
+  const lockKey = `${examId}_${normalizedMatric}`;
+
+  // Simultaneous submission lock protection
+  if (inFlightSubmissionLocks.has(lockKey)) {
+    res.status(409).json({
+      error: 'A submission for this matriculation number is already currently being processed. Duplicate simultaneous submissions are rejected.'
+    });
+    return;
+  }
+  inFlightSubmissionLocks.add(lockKey);
+
   try {
-    const { examId, sessionId, fullName, matricNumber, department, gender, answers = {} } = req.body;
-
-    if (!examId || !matricNumber || !fullName || !department) {
-      res.status(400).json({ error: 'Missing candidate details for examination submission.' });
-      return;
-    }
-
-    const normalizedMatric = matricNumber.trim().toUpperCase();
-
     // 1. Fetch official exam with answer keys
     const examDoc = await getDoc(doc(db, 'exams', examId));
     if (!examDoc.exists()) {
@@ -1043,24 +1852,72 @@ app.post('/api/submit-exam', async (req: Request, res: Response): Promise<void> 
     }
     const examData = examDoc.data();
 
-    // 2. Check duplicate submission via session
+    // 2. Duplicate Check: Check session status and previous submissions for this exam
     const deterministicSessionId = sessionId || `ses_${examId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const sessionSnap = await getDoc(doc(db, 'exam_sessions', deterministicSessionId));
     if (sessionSnap.exists() && sessionSnap.data().status === 'submitted') {
-      res.status(400).json({ error: 'Examination has already been submitted for this matriculation number.' });
+      res.status(400).json({
+        error: `Duplicate Submission Error: Candidate with Matriculation Number ${normalizedMatric} has already submitted this examination.`,
+        alreadySubmitted: true
+      });
       return;
     }
 
-    // 3. Server-side automated marking
-    const questions = Array.isArray(examData.questions) ? examData.questions : [];
-    let score = 0;
-    const totalQuestions = questions.length;
+    // 4. Resolve exact question order presented to the candidate
+    const assignedBatch = (sessionSnap.exists() && sessionSnap.data()?.batch) || 'Batch A';
+    const rawQuestions = Array.isArray(examData.questions) ? examData.questions : [];
+    let orderedQuestions = [...rawQuestions];
 
-    questions.forEach((q: any, idx: number) => {
+    if (examData.randomizationEnabled && examData.batches && examData.batches[assignedBatch]) {
+      const batchIds = examData.batches[assignedBatch].questionIds;
+      if (Array.isArray(batchIds) && batchIds.length > 0) {
+        const questionMap = new Map(rawQuestions.map((q: any) => [q.id, q]));
+        const batchOrdered: any[] = [];
+        batchIds.forEach((id: string) => {
+          const q = questionMap.get(id);
+          if (q) batchOrdered.push(q);
+        });
+        rawQuestions.forEach((q: any) => {
+          if (!batchIds.includes(q.id)) batchOrdered.push(q);
+        });
+        orderedQuestions = batchOrdered;
+      }
+    }
+
+    // 5. Build immutable question snapshot preserving exact text, options, order and correct answers
+    const questionSnapshot = orderedQuestions.map((q: any, idx: number) => ({
+      id: q.id || `q_${idx}`,
+      questionNumber: idx + 1,
+      questionText: q.questionText || '',
+      options: Array.isArray(q.options) ? q.options : [],
+      correctAnswer: typeof q.correctAnswer === 'number' ? q.correctAnswer : 0,
+      isTrueFalse: Boolean(
+        (q.options && q.options.length === 2 && (q.options[0].toLowerCase() === 'true')) ||
+        q.isTrueFalse
+      )
+    }));
+
+    let score = 0;
+    let attemptedCount = 0;
+    let correctCount = 0;
+    let incorrectCount = 0;
+    let unansweredCount = 0;
+    const totalQuestions = orderedQuestions.length;
+
+    orderedQuestions.forEach((q: any, idx: number) => {
       const qKey = q.id || `q_${idx}`;
       const candidateChoice = answers[qKey];
-      if (candidateChoice !== undefined && Number(candidateChoice) === Number(q.correctAnswer)) {
-        score += 1;
+      const isUnanswered = candidateChoice === undefined || candidateChoice === null || Number(candidateChoice) < 0 || isNaN(Number(candidateChoice));
+      if (isUnanswered) {
+        unansweredCount += 1;
+      } else {
+        attemptedCount += 1;
+        if (isAnswerCorrect(candidateChoice, q.correctAnswer, q.options || [])) {
+          score += 1;
+          correctCount += 1;
+        } else {
+          incorrectCount += 1;
+        }
       }
     });
 
@@ -1075,26 +1932,36 @@ app.post('/api/submit-exam', async (req: Request, res: Response): Promise<void> 
       ? 'F'
       : 'Not recorded';
 
-    // 4. Store submission securely in Firestore
+    // Normalize and auto-capitalize personal details
+    const cleanedFullName = capitalizeProper(fullName);
+    const cleanedDepartment = capitalizeProper(department);
+
+    // 6. Store submission securely in Firestore with immutable question snapshot and performance metrics
     await setDoc(doc(db, 'submissions', submissionId), {
       examId,
       lecturerId: examData.lecturerId || 'central_examiner',
-      fullName: fullName.trim(),
+      lecturerName: examData.lecturerName || 'Not specified',
+      fullName: cleanedFullName,
       matricNumber: normalizedMatric,
-      department,
+      department: cleanedDepartment,
       gender: resolvedGender,
       courseCode: examData.courseCode,
       courseTitle: examData.courseTitle,
       score,
       totalQuestions,
       percentage,
+      attemptedCount,
+      unansweredCount,
+      correctCount,
+      incorrectCount,
       submittedAt,
       submissionReceipt,
-      batch: (sessionSnap.exists() && sessionSnap.data()?.batch) || 'Batch A',
-      answers
+      batch: assignedBatch,
+      answers,
+      questionSnapshot
     });
 
-    // 5. Update session status
+    // 6. Update session status
     timerManager.markCompleted(deterministicSessionId);
     if (deterministicSessionId) {
       try {
@@ -1107,20 +1974,97 @@ app.post('/api/submit-exam', async (req: Request, res: Response): Promise<void> 
       }
     }
 
-    // 6. Return response to student (WITHOUT SCORES OR CORRECT ANSWERS)
+    // 7. Return response to student (WITHOUT SCORES OR CORRECT ANSWERS)
     res.json({
       success: true,
       submissionReceipt,
       submittedAt,
-      fullName: fullName.trim(),
+      fullName: cleanedFullName,
       matricNumber: normalizedMatric,
       courseCode: examData.courseCode,
       courseTitle: examData.courseTitle,
+      lecturerName: examData.lecturerName || 'Not specified',
       totalQuestions
     });
   } catch (error: any) {
     console.error('Error submitting exam:', error);
     res.status(500).json({ error: error?.message || 'Failed to record examination submission.' });
+  } finally {
+    inFlightSubmissionLocks.delete(lockKey);
+  }
+});
+
+// 5. Batch Candidate Registration & Duplicate Detection Endpoint
+app.post('/api/validate-candidate-batch', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { candidates, examId } = req.body;
+
+    if (!Array.isArray(candidates)) {
+      res.status(400).json({ error: 'candidates must be an array.' });
+      return;
+    }
+
+    const existingMatrics = new Set<string>();
+    if (examId) {
+      try {
+        const examDoc = await getDoc(doc(db, 'exams', examId));
+        if (examDoc.exists()) {
+          const eData = examDoc.data();
+          const roster: any[] = Array.isArray(eData.registeredCandidates) ? eData.registeredCandidates : [];
+          roster.forEach((c: any) => {
+            if (c.matricNumber) existingMatrics.add(String(c.matricNumber).trim().toUpperCase());
+          });
+        }
+      } catch (err) {
+        console.warn('Could not read existing exam roster:', err);
+      }
+    }
+
+    const report = validateAndReportCandidateBatch(candidates, existingMatrics);
+
+    // Also check if any candidate in validCandidates has already submitted an exam session
+    if (examId && report.validCandidates.length > 0) {
+      const alreadySubmitted: string[] = [];
+      for (const cand of report.validCandidates) {
+        const sesId = `ses_${examId}_${cand.matricNumber.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        try {
+          const sSnap = await getDoc(doc(db, 'exam_sessions', sesId));
+          if (sSnap.exists() && sSnap.data()?.status === 'submitted') {
+            alreadySubmitted.push(cand.matricNumber);
+          }
+        } catch {}
+      }
+
+      if (alreadySubmitted.length > 0) {
+        alreadySubmitted.forEach(m => report.rejectedEntries.alreadyRegistered.push(m));
+        report.validCandidates = report.validCandidates.filter(c => !alreadySubmitted.includes(c.matricNumber));
+        report.summary.validCount = report.validCandidates.length;
+        report.summary.rejectedCount += alreadySubmitted.length;
+        report.valid = false;
+        report.reportMessage += `\n• Already submitted this examination (${alreadySubmitted.length}): ${alreadySubmitted.join(', ')}`;
+      }
+    }
+
+    if (!report.valid) {
+      res.status(400).json({
+        valid: false,
+        summary: report.summary,
+        error: report.reportMessage,
+        rejectedEntries: report.rejectedEntries,
+        validCandidates: report.validCandidates
+      });
+      return;
+    }
+
+    res.json({
+      valid: true,
+      summary: report.summary,
+      message: report.reportMessage,
+      validCandidates: report.validCandidates
+    });
+  } catch (error: any) {
+    console.error('Error validating candidate batch:', error);
+    res.status(500).json({ error: 'Failed to validate candidate batch.' });
   }
 });
 

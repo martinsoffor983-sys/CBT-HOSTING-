@@ -8,6 +8,16 @@ import {
 } from 'firebase/auth';
 import { auth } from '../lib/firebase';
 
+export const AUTHORIZED_LECTURER_EMAILS = [
+  'sunsmartcbt@gmail.com',
+  'sunsug539@gmail.com'
+];
+
+export function isAuthorizedExaminerEmail(email: string | undefined | null): boolean {
+  if (!email) return false;
+  return AUTHORIZED_LECTURER_EMAILS.includes(email.toLowerCase().trim());
+}
+
 export const AUTHORIZED_LECTURER_EMAIL = 'sunsmartcbt@gmail.com';
 
 interface AuthContextType {
@@ -30,7 +40,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Immediate synchronous check for unauthorized cached session
     if (auth.currentUser) {
       const email = (auth.currentUser.email || '').toLowerCase().trim();
-      if (email !== AUTHORIZED_LECTURER_EMAIL) {
+      if (!isAuthorizedExaminerEmail(email)) {
         console.warn(`[Security Alert] Immediately evicting unauthorized cached session: ${email}`);
         signOut(auth).catch(() => {});
       }
@@ -46,8 +56,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const userEmail = (currentUser.email || '').toLowerCase().trim();
 
-      // Strict email gate: Only sunsmartcbt@gmail.com is authorized
-      if (userEmail !== AUTHORIZED_LECTURER_EMAIL) {
+      // Strict email gate: Authorized administrator emails
+      if (!isAuthorizedExaminerEmail(userEmail)) {
         console.warn(`[Security Alert] Unauthorized account detected: ${userEmail}. Revoking session immediately.`);
         try {
           await signOut(auth);
@@ -97,8 +107,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signInWithEmail = async (email: string, pass: string) => {
     const cleanEmail = email.trim().toLowerCase();
-    if (cleanEmail !== AUTHORIZED_LECTURER_EMAIL) {
-      throw new Error(`Access Restricted: Only the designated Sports University administrator (${AUTHORIZED_LECTURER_EMAIL}) is permitted.`);
+    if (!isAuthorizedExaminerEmail(cleanEmail)) {
+      throw new Error(`Access Restricted: Only authorized Sports University administrators are permitted.`);
     }
 
     const cred = await signInWithEmailAndPassword(auth, cleanEmail, pass);
@@ -107,7 +117,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     const userEmail = (cred.user.email || '').toLowerCase().trim();
-    if (userEmail !== AUTHORIZED_LECTURER_EMAIL) {
+    if (!isAuthorizedExaminerEmail(userEmail)) {
       await signOut(auth);
       throw new Error(`Access Denied: Account (${userEmail}) is not authorized as the university examiner.`);
     }
@@ -141,8 +151,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const sendPasswordReset = async (email: string) => {
     const cleanEmail = email.trim().toLowerCase();
-    if (cleanEmail !== AUTHORIZED_LECTURER_EMAIL) {
-      throw new Error(`Access Restricted: Only the designated Sports University administrator (${AUTHORIZED_LECTURER_EMAIL}) is permitted.`);
+    if (!isAuthorizedExaminerEmail(cleanEmail)) {
+      throw new Error(`Access Restricted: Only authorized Sports University administrators are permitted.`);
     }
 
     await sendPasswordResetEmail(auth, cleanEmail);
