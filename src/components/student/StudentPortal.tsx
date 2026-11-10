@@ -28,6 +28,8 @@ import {
 import { PublicExam, SanitizedQuestion, StudentInfo } from '../../types';
 import { formatLagosDateTime, formatLagosTime, formatLagosDate, parseLagosExamTime } from '../../utils/timeUtils';
 import { validateMatricNumber, capitalizeProper, normalizeStudentData } from '../../utils/studentValidation';
+import { GoogleCalendarSync } from '../calendar/GoogleCalendarSync';
+import { Calendar as CalendarIcon } from 'lucide-react';
 
 interface StudentPortalProps {
   initialExamId?: string | null;
@@ -55,6 +57,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     gender: ''
   });
   const [matricLiveMsg, setMatricLiveMsg] = useState<{ text: string; isError: boolean } | null>(null);
+  const [hasSignedIn, setHasSignedIn] = useState(false);
 
   // Active Exam Session Data
   const [sessionId, setSessionId] = useState<string>('');
@@ -391,7 +394,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           fullName: studentInfo.fullName,
           matricNumber: studentInfo.matricNumber,
           department: studentInfo.department,
-          gender: studentInfo.gender
+          gender: studentInfo.gender,
+          hasSignedIn: true
         })
       });
 
@@ -624,62 +628,68 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               </button>
             </form>
 
-            {/* Available Published Examinations List */}
+            {/* Published Examinations List */}
             {availableExams.length > 0 && (
               <div className="pt-6 border-t border-[#789981]/20 text-left space-y-3">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-[#ADCDBA]">
-                    Active University Examinations ({availableExams.length})
+                    PUBLISHED EXAMINATIONS ({availableExams.length})
                   </h3>
-                  <span className="text-[10px] bg-[#0E623B] border border-[#D6BF62]/40 text-[#D6BF62] font-extrabold px-2 py-0.5 rounded-full">
-                    Live
-                  </span>
+                  {/* Dynamic schedule status summary badge */}
+                  {(() => {
+                    const hasOngoing = availableExams.some((e) => !e.isClosed && !e.notYetOpen);
+                    const hasUpcoming = availableExams.some((e) => e.notYetOpen);
+                    if (hasOngoing) {
+                      return (
+                        <span className="text-[10px] bg-[#0E623B] border border-[#10B981]/50 text-[#10B981] font-extrabold px-2 py-0.5 rounded-full">
+                          Ongoing Available
+                        </span>
+                      );
+                    }
+                    if (hasUpcoming) {
+                      return (
+                        <span className="text-[10px] bg-amber-950/60 border border-amber-500/40 text-amber-300 font-extrabold px-2 py-0.5 rounded-full">
+                          Upcoming Scheduled
+                        </span>
+                      );
+                    }
+                    return (
+                      <span className="text-[10px] bg-slate-900 border border-slate-700 text-slate-400 font-bold px-2 py-0.5 rounded-full">
+                        Completed
+                      </span>
+                    );
+                  })()}
                 </div>
 
                 <div className="space-y-2.5 max-h-60 overflow-y-auto">
-                  {availableExams.map((pubExam) => (
-                    <div
-                      key={pubExam.id}
-                      onClick={() => {
-                        if (pubExam.isClosed) {
-                          setExamError('This examination has ended. Access is no longer available.');
-                          return;
-                        }
-                        if (pubExam.notYetOpen) {
-                          setExamError('This examination is not open yet.');
-                          return;
-                        }
-                        setExamIdInput(pubExam.id);
-                        loadExamInfo(pubExam.id);
-                      }}
-                      className={`p-3.5 rounded-2xl border ${pubExam.isClosed ? 'border-red-900/40 bg-[#160a0a] opacity-80 cursor-not-allowed' : pubExam.notYetOpen ? 'border-yellow-900/40 bg-[#14120a] cursor-not-allowed' : 'border-[#789981]/30 bg-[#0A2419] hover:border-[#D6BF62] hover:bg-[#0E3324] cursor-pointer'} transition flex items-center justify-between gap-3 group`}
-                    >
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-bold text-xs text-[#D6BF62] bg-[#030515] px-2 py-0.5 rounded border border-[#789981]/30">
-                            {pubExam.courseCode}
-                          </span>
-                          <span className="text-[11px] text-[#ADCDBA] font-medium">
-                            {pubExam.department}
-                          </span>
-                        </div>
-                        <p className="text-xs font-bold text-[#F0F9F3] mt-1 line-clamp-1 group-hover:text-[#D6BF62] transition">
-                          {pubExam.courseTitle}
-                        </p>
-                        <p className="text-[10px] text-[#ADCDBA] mt-0.5">
-                          Lecturer: <strong className="text-[#D6BF62]">{pubExam.lecturerName || 'Not specified'}</strong>
-                        </p>
-                        <p className="text-[10px] text-[#789981] mt-0.5">
-                          {pubExam.durationMinutes} Mins • {pubExam.questionsCount} Questions
-                          {pubExam.startDate && pubExam.endDate ? ` • ${formatLagosDate(pubExam.startDate)} (${formatLagosTime(pubExam.startDate)} – ${formatLagosTime(pubExam.endDate)})` : ''}
-                        </p>
-                      </div>
+                  {availableExams.map((pubExam) => {
+                    const startMs = parseLagosExamTime(pubExam.startDate);
+                    const endMs = parseLagosExamTime(pubExam.endDate);
+                    // Accurately compute duration in minutes from start and end times if available, or fall back to database durationMinutes
+                    let computedDuration = pubExam.durationMinutes;
+                    if (startMs && endMs && endMs > startMs) {
+                      computedDuration = Math.round((endMs - startMs) / (60 * 1000));
+                    }
 
-                      <button
-                        type="button"
-                        disabled={pubExam.isClosed || pubExam.notYetOpen}
-                        onClick={(e) => {
-                          e.stopPropagation();
+                    // Precise status evaluation based on actual examination schedule
+                    let statusBadgeLabel = 'Ongoing';
+                    let statusBadgeClass = 'bg-[#0E623B] text-[#10B981] border border-[#10B981]/40';
+                    let actionButtonText = 'Access Examination';
+
+                    if (pubExam.isClosed) {
+                      statusBadgeLabel = 'Completed';
+                      statusBadgeClass = 'bg-red-950/60 text-red-300 border border-red-500/40';
+                      actionButtonText = 'Ended';
+                    } else if (pubExam.notYetOpen) {
+                      statusBadgeLabel = 'Upcoming';
+                      statusBadgeClass = 'bg-amber-950/60 text-amber-300 border border-amber-500/40';
+                      actionButtonText = 'Upcoming';
+                    }
+
+                    return (
+                      <div
+                        key={pubExam.id}
+                        onClick={() => {
                           if (pubExam.isClosed) {
                             setExamError('This examination has ended. Access is no longer available.');
                             return;
@@ -691,15 +701,63 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                           setExamIdInput(pubExam.id);
                           loadExamInfo(pubExam.id);
                         }}
-                        className={`px-3.5 py-2 ${pubExam.isClosed ? 'bg-red-950/60 border border-red-500/40 text-red-300' : pubExam.notYetOpen ? 'bg-yellow-950/60 border border-yellow-500/40 text-yellow-300' : 'bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62]/60 text-[#F0F9F3]'} text-xs font-bold rounded-xl transition shrink-0`}
+                        className={`p-3.5 rounded-2xl border ${pubExam.isClosed ? 'border-red-900/40 bg-[#160a0a] opacity-80 cursor-not-allowed' : pubExam.notYetOpen ? 'border-yellow-900/40 bg-[#14120a] cursor-not-allowed' : 'border-[#789981]/30 bg-[#0A2419] hover:border-[#D6BF62] hover:bg-[#0E3324] cursor-pointer'} transition flex items-center justify-between gap-3 group`}
                       >
-                        {pubExam.isClosed ? 'Ended' : pubExam.notYetOpen ? 'Upcoming' : 'Access Examination'}
-                      </button>
-                    </div>
-                  ))}
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-xs text-[#D6BF62] bg-[#030515] px-2 py-0.5 rounded border border-[#789981]/30">
+                              {pubExam.courseCode}
+                            </span>
+                            <span className="text-[11px] text-[#ADCDBA] font-medium">
+                              {pubExam.department}
+                            </span>
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${statusBadgeClass}`}>
+                              {statusBadgeLabel}
+                            </span>
+                          </div>
+                          <p className="text-xs font-bold text-[#F0F9F3] mt-1 line-clamp-1 group-hover:text-[#D6BF62] transition">
+                            {pubExam.courseTitle}
+                          </p>
+                          <p className="text-[10px] text-[#ADCDBA] mt-0.5">
+                            Lecturer: <strong className="text-[#D6BF62]">{pubExam.lecturerName || 'Not specified'}</strong>
+                          </p>
+                          <p className="text-[10px] text-[#789981] mt-0.5">
+                            {computedDuration} Mins • {pubExam.questionsCount} Questions
+                            {pubExam.startDate && pubExam.endDate ? ` • ${formatLagosDate(pubExam.startDate)} (${formatLagosTime(pubExam.startDate)} – ${formatLagosTime(pubExam.endDate)})` : ''}
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={pubExam.isClosed || pubExam.notYetOpen}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (pubExam.isClosed) {
+                              setExamError('This examination has ended. Access is no longer available.');
+                              return;
+                            }
+                            if (pubExam.notYetOpen) {
+                              setExamError('This examination is not open yet.');
+                              return;
+                            }
+                            setExamIdInput(pubExam.id);
+                            loadExamInfo(pubExam.id);
+                          }}
+                          className={`px-3.5 py-2 ${pubExam.isClosed ? 'bg-red-950/60 border border-red-500/40 text-red-300' : pubExam.notYetOpen ? 'bg-yellow-950/60 border border-yellow-500/40 text-yellow-300' : 'bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62]/60 text-[#F0F9F3]'} text-xs font-bold rounded-xl transition shrink-0`}
+                        >
+                          {actionButtonText}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
+
+            {/* Google Calendar Examination Synchronization Section */}
+            <div className="pt-2">
+              <GoogleCalendarSync exams={availableExams} />
+            </div>
           </div>
         </div>
       </div>
@@ -769,6 +827,11 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   return;
                 }
 
+                if (!hasSignedIn) {
+                  setExamError('Compulsory requirement: You must check the SIGN IN box to record your attendance before starting.');
+                  return;
+                }
+
                 // Strict Matriculation Number Validation (Format 1: 10 digits; Format 2: DE + 10 digits)
                 const matricCheck = validateMatricNumber(studentInfo.matricNumber);
                 if (!matricCheck.isValid) {
@@ -799,7 +862,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       matricNumber: matricCheck.normalized,
                       fullName: normalizedFullName,
                       department: normalizedDepartment,
-                      gender: studentInfo.gender
+                      gender: studentInfo.gender,
+                      hasSignedIn: true
                     })
                   });
                   const vData = await vRes.json();
@@ -849,7 +913,17 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
                       Duration
                     </label>
-                    <p className="text-xs font-bold text-[#F0F9F3]">{exam?.durationMinutes} Minutes</p>
+                    <p className="text-xs font-bold text-[#F0F9F3]">
+                      {(() => {
+                        if (!exam) return '45 Minutes';
+                        const sMs = parseLagosExamTime(exam.startDate);
+                        const eMs = parseLagosExamTime(exam.endDate);
+                        if (sMs && eMs && eMs > sMs) {
+                          return `${Math.round((eMs - sMs) / (60 * 1000))} Minutes`;
+                        }
+                        return `${exam.durationMinutes || 45} Minutes`;
+                      })()}
+                    </p>
                   </div>
                 </div>
 
@@ -873,6 +947,17 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       </label>
                       <p className="text-xs font-bold text-amber-400">{formatLagosTime(exam.endDate)} (WAT)</p>
                     </div>
+                  </div>
+                )}
+
+                {/* Calendar Sync Integration for this exam */}
+                {exam && (
+                  <div className="pt-3 border-t border-[#789981]/20">
+                    <GoogleCalendarSync
+                      exams={[exam]}
+                      candidateMatric={studentInfo.matricNumber}
+                      departmentFilter={exam.department}
+                    />
                   </div>
                 )}
               </div>
@@ -1106,6 +1191,44 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </div>
               </div>
 
+              {/* Compulsory Online Examination Attendance Sign-In Selection */}
+              <div className={`p-4 rounded-2xl border-2 transition ${
+                hasSignedIn
+                  ? 'bg-[#0E623B]/20 border-[#D6BF62] shadow-md shadow-[#0E623B]/20'
+                  : 'bg-[#0A2419] border-[#D6BF62]/50 hover:border-[#D6BF62]'
+              }`}>
+                <label
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setHasSignedIn(prev => !prev);
+                  }}
+                  className="flex items-start gap-3.5 cursor-pointer select-none"
+                >
+                  <div className="pt-0.5">
+                    <div
+                      className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition ${
+                        hasSignedIn
+                          ? 'border-[#D6BF62] bg-[#D6BF62] text-[#061C13]'
+                          : 'border-[#D6BF62] bg-[#030515]'
+                      }`}
+                    >
+                      {hasSignedIn && <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-sm font-black text-[#F0F9F3] uppercase tracking-wide flex items-center gap-2">
+                      <span>SIGN IN</span>
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-[#D6BF62]/20 text-[#D6BF62] border border-[#D6BF62]/40">
+                        Compulsory
+                      </span>
+                    </span>
+                    <p className="text-xs text-[#ADCDBA] mt-1 leading-relaxed">
+                      I hereby officially sign in to take this online CBT examination. My attendance and sign-in timestamp will be recorded.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
               <div className="flex items-center gap-3 pt-2">
                 <button
                   type="button"
@@ -1117,7 +1240,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
                 <button
                   type="submit"
-                  disabled={loadingExam || !validateMatricNumber(studentInfo.matricNumber).isValid || !studentInfo.gender || !studentInfo.fullName.trim() || !studentInfo.department.trim()}
+                  disabled={loadingExam || !hasSignedIn || !validateMatricNumber(studentInfo.matricNumber).isValid || !studentInfo.gender || !studentInfo.fullName.trim() || !studentInfo.department.trim()}
                   className="flex-1 py-3 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-bold rounded-xl text-sm shadow-lg hover:shadow-[#0E623B]/30 transition flex items-center justify-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {loadingExam ? (

@@ -28,11 +28,12 @@ import {
 } from 'lucide-react';
 import { Exam } from '../../types';
 import { useAuth, isAuthorizedExaminerEmail } from '../../context/AuthContext';
-import { collection, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, deleteDoc, doc, updateDoc, query, where, writeBatch } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
 import { ExamEditor } from './ExamEditor';
 import { ExamResultsView } from './ExamResultsView';
 import { ExamAttendanceView } from './ExamAttendanceView';
+import { GoogleCalendarSync } from '../calendar/GoogleCalendarSync';
 import { formatLagosDate, formatLagosTime } from '../../utils/timeUtils';
 
 export const LecturerDashboard: React.FC = () => {
@@ -147,6 +148,33 @@ export const LecturerDashboard: React.FC = () => {
     const courseCode = examToDeleteResults.courseCode;
 
     try {
+      // 1. Direct authenticated client deletion of submissions
+      try {
+        const subsQuery = query(collection(db, 'submissions'), where('examId', '==', targetId));
+        const subsSnap = await getDocs(subsQuery);
+        if (!subsSnap.empty) {
+          const batch = writeBatch(db);
+          subsSnap.forEach((d) => batch.delete(d.ref));
+          await batch.commit();
+        }
+      } catch (clientSubErr) {
+        console.warn('Direct client submission delete notice:', clientSubErr);
+      }
+
+      // 2. Direct authenticated client deletion of exam_sessions
+      try {
+        const sesQuery = query(collection(db, 'exam_sessions'), where('examId', '==', targetId));
+        const sesSnap = await getDocs(sesQuery);
+        if (!sesSnap.empty) {
+          const sesBatch = writeBatch(db);
+          sesSnap.forEach((d) => sesBatch.delete(d.ref));
+          await sesBatch.commit();
+        }
+      } catch (clientSesErr) {
+        console.warn('Direct client session delete notice:', clientSesErr);
+      }
+
+      // 3. Server-side cleanup, audit log, and active timer clear
       const token = await user.getIdToken();
       const res = await fetch(`/api/exam/${targetId}/delete-results`, {
         method: 'POST',
@@ -156,9 +184,9 @@ export const LecturerDashboard: React.FC = () => {
         }
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to delete examination results.');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && !data.success) {
+        throw new Error(data.error || 'Failed to complete examination results deletion.');
       }
 
       setActionNotification({
@@ -411,6 +439,11 @@ export const LecturerDashboard: React.FC = () => {
           <p className="text-2xl font-black text-[#F0F9F3]">{totalQuestions}</p>
           <p className="text-[11px] text-[#ADCDBA] mt-0.5">Stored with verified keys</p>
         </div>
+      </div>
+
+      {/* Google Calendar Examination Schedule Synchronization */}
+      <div className="mb-6">
+        <GoogleCalendarSync exams={exams} />
       </div>
 
       {/* Search and Filter Row */}

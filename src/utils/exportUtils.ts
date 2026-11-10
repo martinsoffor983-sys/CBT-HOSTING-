@@ -1529,8 +1529,8 @@ export function exportAttendanceToExcel(
       rec.status === 'signed_out'
         ? 'Signed Out'
         : rec.status === 'signed_in'
-        ? 'Signed In (Present in Hall)'
-        : 'Absent / Pending';
+        ? 'Signed In (In Examination)'
+        : 'Absent / Not Started';
 
     const submissionStatusLabel =
       rec.submissionStatus === 'submitted'
@@ -1715,13 +1715,13 @@ export async function exportAttendanceToWord(
             width: { size: 20, type: WidthType.PERCENTAGE },
             shading: { fill: '0B532C' },
             margins: { top: 100, bottom: 100, left: 100, right: 100 },
-            children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'CURRENT IN HALL', bold: true, size: 18, color: 'FFFFFF' })] })]
+            children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'IN EXAMINATION', bold: true, size: 18, color: 'FFFFFF' })] })]
           }),
           new TableCell({
             width: { size: 20, type: WidthType.PERCENTAGE },
             shading: { fill: '0B532C' },
             margins: { top: 100, bottom: 100, left: 100, right: 100 },
-            children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'ABSENT / PENDING', bold: true, size: 18, color: 'FFFFFF' })] })]
+            children: [new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: 'NOT STARTED', bold: true, size: 18, color: 'FFFFFF' })] })]
           })
         ]
       }),
@@ -1926,7 +1926,7 @@ export async function exportAttendanceToWord(
                 spacing: { before: 20, after: 100 },
                 children: [
                   new TextRun({
-                    text: 'I hereby attest and certify that this Attendance Register is the complete, true and accurate record of all physical candidate sign-ins and sign-outs recorded during the conduct of this examination at Sports University of Nigeria.',
+                    text: 'I hereby attest and certify that this Attendance Register is the complete, true and accurate record of all student online CBT examination sign-ins and automatic sign-outs recorded during the conduct of this examination at Sports University of Nigeria.',
                     italics: true,
                     size: 18,
                     color: '475569'

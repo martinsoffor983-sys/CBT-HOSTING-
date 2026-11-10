@@ -26,7 +26,7 @@ import {
   ClipboardCheck
 } from 'lucide-react';
 import { Exam, Submission, SUN_DEPARTMENTS, QuestionSnapshot } from '../../types';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, writeBatch, doc } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
 import {
   exportToExcel,
@@ -66,6 +66,33 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack, 
     if (!user) return;
     setIsDeletingResults(true);
     try {
+      // 1. Direct authenticated client deletion of submissions
+      try {
+        const subsQuery = query(collection(db, 'submissions'), where('examId', '==', exam.id));
+        const subsSnap = await getDocs(subsQuery);
+        if (!subsSnap.empty) {
+          const batch = writeBatch(db);
+          subsSnap.forEach((d) => batch.delete(d.ref));
+          await batch.commit();
+        }
+      } catch (clientSubErr) {
+        console.warn('Direct client submission delete notice:', clientSubErr);
+      }
+
+      // 2. Direct authenticated client deletion of exam_sessions
+      try {
+        const sesQuery = query(collection(db, 'exam_sessions'), where('examId', '==', exam.id));
+        const sesSnap = await getDocs(sesQuery);
+        if (!sesSnap.empty) {
+          const sesBatch = writeBatch(db);
+          sesSnap.forEach((d) => sesBatch.delete(d.ref));
+          await sesBatch.commit();
+        }
+      } catch (clientSesErr) {
+        console.warn('Direct client session delete notice:', clientSesErr);
+      }
+
+      // 3. Server-side cleanup, audit log, and active timer clear
       const token = await user.getIdToken();
       const res = await fetch(`/api/exam/${exam.id}/delete-results`, {
         method: 'POST',
@@ -74,10 +101,11 @@ export const ExamResultsView: React.FC<ExamResultsViewProps> = ({ exam, onBack, 
           Authorization: `Bearer ${token}`
         }
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to delete examination results.');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && !data.success) {
+        throw new Error(data.error || 'Failed to complete examination results deletion.');
       }
+
       setSubmissions([]);
       setShowDeleteResultsModal(false);
       setDeleteNotification({

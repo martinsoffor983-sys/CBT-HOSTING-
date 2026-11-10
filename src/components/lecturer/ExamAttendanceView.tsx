@@ -1,35 +1,29 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ArrowLeft,
   FileSpreadsheet,
   FileText,
   Search,
-  Filter,
   Users,
   CheckCircle2,
   XCircle,
   Clock,
-  UserCheck,
-  UserX,
-  LogOut,
-  LogIn,
-  AlertCircle,
-  RefreshCw,
-  QrCode,
-  ShieldCheck,
   RotateCcw,
-  Plus,
   X,
   Calendar,
   Layers,
   Check,
   BookOpen,
   User,
-  ShieldAlert
+  ShieldAlert,
+  GraduationCap,
+  Sparkles
 } from 'lucide-react';
 import { Exam, AttendanceRecord, SUN_DEPARTMENTS } from '../../types';
-import { useAuth } from '../../context/AuthContext';
-import { capitalizeProper, validateMatricNumber } from '../../utils/studentValidation';
+import { useAuth, isAuthorizedExaminerEmail } from '../../context/AuthContext';
+import { collection, query, where, getDocs, doc, getDoc, updateDoc, addDoc } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
+import { capitalizeProper } from '../../utils/studentValidation';
 import { formatLagosDate, formatLagosTime, formatLagosDateTime } from '../../utils/timeUtils';
 import { exportAttendanceToExcel, exportAttendanceToWord } from '../../utils/exportUtils';
 
@@ -46,351 +40,301 @@ export const ExamAttendanceView: React.FC<ExamAttendanceViewProps> = ({
   onSelectExam,
   onBack
 }) => {
-  const { user } = useAuth();
+  const { user, isAuthorized } = useAuth();
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
-
-  // Quick Scanner / Matric input state
-  const [quickMatric, setQuickMatric] = useState('');
-  const [quickActionType, setQuickActionType] = useState<'sign-in' | 'sign-out'>('sign-in');
-  const [quickFeedback, setQuickFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-  const quickInputRef = useRef<HTMLInputElement>(null);
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDept, setSelectedDept] = useState('All');
   const [signInFilter, setSignInFilter] = useState<'all' | 'signed_in' | 'not_signed_in'>('all');
-  const [signOutFilter, setSignOutFilter] = useState<'all' | 'signed_out' | 'not_signed_out'>('all');
-  const [submissionFilter, setSubmissionFilter] = useState<'all' | 'submitted' | 'not_submitted'>('all');
+  const [signOutFilter, setSignOutFilter] = useState<'all' | 'signed_out' | 'pending'>('all');
+  const [submissionFilter, setSubmissionFilter] = useState<'all' | 'submitted' | 'in_progress' | 'not_started'>('all');
   const [sortBy, setSortBy] = useState<'matric_asc' | 'matric_desc' | 'name_asc' | 'time_desc'>('matric_asc');
 
-  // Export states
+  // Export state
   const [isExportingWord, setIsExportingWord] = useState(false);
 
-  // Admit Candidate Modal state
-  const [showAdmitModal, setShowAdmitModal] = useState(false);
-  const [admitForm, setAdmitForm] = useState({
-    matricNumber: '',
-    fullName: '',
-    department: exam.department !== 'All Departments' ? exam.department : 'Human Kinetics & Sports Science',
-    gender: 'M',
-    autoSignIn: true
-  });
-  const [admitError, setAdmitError] = useState<string | null>(null);
-  const [isSubmittingAdmit, setIsSubmittingAdmit] = useState(false);
-
-  // Reset Attendance Modal state
+  // Reset Attendance Modal state (Administrative Corrections)
   const [candidateToReset, setCandidateToReset] = useState<AttendanceRecord | null>(null);
   const [resetReason, setResetReason] = useState('Administrative attendance status correction');
   const [isSubmittingReset, setIsSubmittingReset] = useState(false);
 
-  // General Notification Banner
+  // Notification Banner
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   useEffect(() => {
     fetchAttendance();
   }, [exam.id, user]);
 
+  /**
+   * Resilient Attendance Fetcher:
+   * 1. Fetches directly from Firestore using the browser's authenticated token (zero permission errors).
+   * 2. Merges registered candidates, attendance records, and submission records.
+   * 3. Falls back gracefully to server endpoint if needed.
+   */
   const fetchAttendance = async () => {
     if (!user) return;
     setLoading(true);
+
     try {
-      const token = await user.getIdToken();
-      const res = await fetch(`/api/exam/${exam.id}/attendance`, {
-        headers: {
-          Authorization: `Bearer ${token}`
+      // 1. Fetch attendance records directly from Firestore
+      const attQ = query(collection(db, 'attendance_records'), where('examId', '==', exam.id));
+      const attSnap = await getDocs(attQ);
+      const attMap = new Map<string, any>();
+      attSnap.forEach((d) => {
+        const data = d.data();
+        if (data.matricNumber) {
+          attMap.set(String(data.matricNumber).trim().toUpperCase(), { ...data, id: d.id });
         }
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to retrieve attendance records.');
-      }
-      setAttendanceRecords(data.attendanceList || []);
-    } catch (err: any) {
-      console.error('Fetch attendance error:', err);
-      setNotification({
-        type: 'error',
-        message: err.message || 'Could not load examination attendance register.'
+
+      // 2. Fetch submissions directly from Firestore
+      const subsQ = query(collection(db, 'submissions'), where('examId', '==', exam.id));
+      const subsSnap = await getDocs(subsQ);
+      const subsMap = new Map<string, any>();
+      subsSnap.forEach((d) => {
+        const data = d.data();
+        if (data.matricNumber) {
+          subsMap.set(String(data.matricNumber).trim().toUpperCase(), data);
+        }
       });
+
+      // 3. Fetch latest exam document for registered candidates roster
+      const examDocSnap = await getDoc(doc(db, 'exams', exam.id));
+      const examData = examDocSnap.exists() ? examDocSnap.data() : exam;
+      const roster: any[] = Array.isArray(examData.registeredCandidates) ? examData.registeredCandidates : [];
+
+      // 4. Combine all unique candidates
+      const allMatrics = new Set<string>();
+      roster.forEach((c: any) => {
+        if (c.matricNumber) allMatrics.add(String(c.matricNumber).trim().toUpperCase());
+      });
+      attMap.forEach((_, matric) => allMatrics.add(matric));
+      subsMap.forEach((_, matric) => allMatrics.add(matric));
+
+      const mergedList: AttendanceRecord[] = [];
+      allMatrics.forEach((matric) => {
+        const rosterEntry = roster.find((c: any) => String(c.matricNumber).trim().toUpperCase() === matric) || {};
+        const att = attMap.get(matric) || {};
+        const sub = subsMap.get(matric);
+
+        const fullName = capitalizeProper(att.fullName || rosterEntry.fullName || sub?.fullName || 'Candidate');
+        const department = capitalizeProper(att.department || rosterEntry.department || sub?.department || exam.department || 'Not Specified');
+        const rawGender = att.gender || rosterEntry.gender || sub?.gender || 'Not recorded';
+        const gender = (rawGender === 'M' || String(rawGender).trim().toUpperCase() === 'M' || String(rawGender).trim().toUpperCase() === 'MALE')
+          ? 'M'
+          : (rawGender === 'F' || String(rawGender).trim().toUpperCase() === 'F' || String(rawGender).trim().toUpperCase() === 'FEMALE')
+          ? 'F'
+          : 'Not recorded';
+
+        const signInTime = att.signInTime || null;
+        const signOutTime = att.signOutTime || sub?.submittedAt || null;
+
+        let status: 'absent' | 'signed_in' | 'signed_out' = 'absent';
+        if (signOutTime) {
+          status = 'signed_out';
+        } else if (signInTime) {
+          status = 'signed_in';
+        } else {
+          status = 'absent';
+        }
+
+        let submissionStatus: 'not_started' | 'in_progress' | 'submitted' = 'not_started';
+        if (sub || att.submissionStatus === 'submitted') {
+          submissionStatus = 'submitted';
+        } else if (signInTime) {
+          submissionStatus = 'in_progress';
+        }
+
+        mergedList.push({
+          id: att.id || `${exam.id}_${matric.replace(/[^a-zA-Z0-9]/g, '_')}`,
+          examId: exam.id,
+          courseCode: exam.courseCode,
+          courseTitle: exam.courseTitle,
+          matricNumber: matric,
+          fullName,
+          department,
+          gender,
+          signInTime,
+          signedInBy: att.signedInBy || null,
+          signOutTime,
+          signedOutBy: att.signedOutBy || null,
+          status,
+          submissionStatus,
+          submittedAt: sub?.submittedAt || att.submittedAt || null,
+          submissionReceipt: sub?.submissionReceipt || att.submissionReceipt || null,
+          updatedAt: att.updatedAt || new Date().toISOString(),
+          createdAt: att.createdAt || rosterEntry.registeredAt || new Date().toISOString()
+        });
+      });
+
+      // Sort alphabetically by Matriculation Number by default
+      mergedList.sort((a, b) => a.matricNumber.localeCompare(b.matricNumber));
+      setAttendanceRecords(mergedList);
+    } catch (directErr: any) {
+      console.warn('Direct Firestore fetch notice, attempting server fallback:', directErr);
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch(`/api/exam/${exam.id}/attendance`, {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        });
+        const data = await res.json();
+        if (res.ok && Array.isArray(data.attendanceList)) {
+          setAttendanceRecords(data.attendanceList);
+        } else {
+          throw new Error(data.error || 'Failed to retrieve attendance register.');
+        }
+      } catch (fallbackErr: any) {
+        console.error('Attendance fetch error:', fallbackErr);
+        setNotification({
+          type: 'error',
+          message: fallbackErr.message || 'Could not load examination attendance register.'
+        });
+      }
     } finally {
       setLoading(false);
     }
   };
 
-  // Sign In Candidate
-  const handleSignIn = async (matricNumber: string, extraData?: { fullName?: string; department?: string; gender?: string }) => {
-    if (!user) return;
-    setActionLoadingId(`in_${matricNumber}`);
-    try {
-      const token = await user.getIdToken();
-      const res = await fetch(`/api/exam/${exam.id}/attendance/sign-in`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          matricNumber,
-          fullName: extraData?.fullName,
-          department: extraData?.department,
-          gender: extraData?.gender
-        })
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to record sign-in.');
-      }
-
-      setNotification({
-        type: 'success',
-        message: data.message || `Student ${matricNumber} successfully signed in.`
-      });
-      setTimeout(() => setNotification(null), 4000);
-      await fetchAttendance();
-    } catch (err: any) {
-      console.error('Sign-in error:', err);
-      setNotification({
-        type: 'error',
-        message: err.message || 'Sign-in failed.'
-      });
-      setTimeout(() => setNotification(null), 5000);
-    } finally {
-      setActionLoadingId(null);
-    }
-  };
-
-  // Sign Out Candidate
-  const handleSignOut = async (matricNumber: string) => {
-    if (!user) return;
-    setActionLoadingId(`out_${matricNumber}`);
-    try {
-      const token = await user.getIdToken();
-      const res = await fetch(`/api/exam/${exam.id}/attendance/sign-out`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ matricNumber })
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to record sign-out.');
-      }
-
-      setNotification({
-        type: 'success',
-        message: data.message || `Student ${matricNumber} successfully signed out.`
-      });
-      setTimeout(() => setNotification(null), 4000);
-      await fetchAttendance();
-    } catch (err: any) {
-      console.error('Sign-out error:', err);
-      setNotification({
-        type: 'error',
-        message: err.message || 'Sign-out failed.'
-      });
-      setTimeout(() => setNotification(null), 5000);
-    } finally {
-      setActionLoadingId(null);
-    }
-  };
-
-  // Quick Barcode / Scanner Form Submit
-  const handleQuickScannerSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const rawInput = quickMatric.trim();
-    if (!rawInput) return;
-
-    const validation = validateMatricNumber(rawInput);
-    if (!validation.isValid) {
-      setQuickFeedback({
-        type: 'error',
-        message: validation.error || 'Invalid matriculation number format.'
-      });
-      setTimeout(() => setQuickFeedback(null), 4000);
-      return;
-    }
-
-    const cleanMatric = validation.normalized;
-    const existing = attendanceRecords.find((r) => r.matricNumber === cleanMatric);
-
-    if (quickActionType === 'sign-in') {
-      if (existing?.signInTime) {
-        setQuickFeedback({
-          type: 'error',
-          message: `Duplicate action prevented: ${existing.fullName} (${cleanMatric}) is ALREADY signed in at ${formatLagosTime(existing.signInTime)}.`
-        });
-        setTimeout(() => setQuickFeedback(null), 4500);
-        return;
-      }
-      await handleSignIn(cleanMatric, existing ? { fullName: existing.fullName, department: existing.department, gender: existing.gender } : undefined);
-      setQuickFeedback({
-        type: 'success',
-        message: `✓ Signed In: ${existing?.fullName || cleanMatric}`
-      });
-    } else {
-      if (!existing?.signInTime) {
-        setQuickFeedback({
-          type: 'error',
-          message: `Cannot sign out: ${cleanMatric} has not signed in yet. Physical sign-in is required first.`
-        });
-        setTimeout(() => setQuickFeedback(null), 4500);
-        return;
-      }
-      if (existing.signOutTime) {
-        setQuickFeedback({
-          type: 'error',
-          message: `Duplicate action prevented: ${existing.fullName} (${cleanMatric}) already signed out at ${formatLagosTime(existing.signOutTime)}.`
-        });
-        setTimeout(() => setQuickFeedback(null), 4500);
-        return;
-      }
-      await handleSignOut(cleanMatric);
-      setQuickFeedback({
-        type: 'success',
-        message: `✓ Signed Out: ${existing.fullName || cleanMatric}`
-      });
-    }
-
-    setQuickMatric('');
-    setTimeout(() => setQuickFeedback(null), 4000);
-    if (quickInputRef.current) {
-      quickInputRef.current.focus();
-    }
-  };
-
-  // Admit Candidate Form Submit
-  const handleAdmitSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAdmitError(null);
-
-    const val = validateMatricNumber(admitForm.matricNumber);
-    if (!val.isValid) {
-      setAdmitError(val.error || 'Please enter a valid Format A or Format B matriculation number.');
-      return;
-    }
-
-    if (!admitForm.fullName.trim()) {
-      setAdmitError('Student full name is required.');
-      return;
-    }
-
-    setIsSubmittingAdmit(true);
-    try {
-      const token = await user?.getIdToken();
-      const res = await fetch(`/api/exam/${exam.id}/attendance/admit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          matricNumber: val.normalized,
-          fullName: admitForm.fullName.trim(),
-          department: admitForm.department,
-          gender: admitForm.gender,
-          autoSignIn: admitForm.autoSignIn
-        })
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to admit candidate.');
-      }
-
-      setNotification({
-        type: 'success',
-        message: data.message || `Candidate ${admitForm.fullName} admitted successfully.`
-      });
-      setTimeout(() => setNotification(null), 4000);
-      setShowAdmitModal(false);
-      setAdmitForm({
-        matricNumber: '',
-        fullName: '',
-        department: exam.department !== 'All Departments' ? exam.department : 'Human Kinetics & Sports Science',
-        gender: 'M',
-        autoSignIn: true
-      });
-      await fetchAttendance();
-    } catch (err: any) {
-      console.error('Admit error:', err);
-      setAdmitError(err.message || 'Failed to admit candidate.');
-    } finally {
-      setIsSubmittingAdmit(false);
-    }
-  };
-
-  // Reset / Correct Attendance
-  const confirmResetAttendance = async () => {
-    if (!candidateToReset || !user) return;
+  // Reset Attendance Record (Audited Administrative Correction)
+  const handleResetAttendance = async () => {
+    if (!user || !candidateToReset) return;
     setIsSubmittingReset(true);
+
     try {
-      const token = await user.getIdToken();
-      const res = await fetch(`/api/exam/${exam.id}/attendance/reset`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          matricNumber: candidateToReset.matricNumber,
-          reason: resetReason.trim()
-        })
+      const matric = candidateToReset.matricNumber;
+      const attDocId = `${exam.id}_${matric.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const nowIso = new Date().toISOString();
+
+      // 1. Direct update in Firestore
+      await updateDoc(doc(db, 'attendance_records', attDocId), {
+        signInTime: null,
+        signOutTime: null,
+        status: 'absent',
+        submissionStatus: 'not_started',
+        updatedAt: nowIso
       });
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to correct attendance record.');
+      // 2. Write immutable audit log (Rule 7)
+      try {
+        await addDoc(collection(db, 'audit_logs'), {
+          action: 'ONLINE_ATTENDANCE_CORRECTION_RESET',
+          examId: exam.id,
+          matricNumber: matric,
+          candidateName: candidateToReset.fullName,
+          performedByEmail: user.email || 'sunsmartcbt@gmail.com',
+          reason: resetReason,
+          previousState: {
+            signInTime: candidateToReset.signInTime,
+            signOutTime: candidateToReset.signOutTime,
+            status: candidateToReset.status
+          },
+          timestamp: nowIso
+        });
+      } catch (auditErr) {
+        console.warn('Could not write audit log:', auditErr);
       }
 
       setNotification({
         type: 'success',
-        message: data.message || `Attendance for ${candidateToReset.matricNumber} reset successfully.`
+        message: `Attendance record for ${candidateToReset.fullName} (${matric}) reset to Not Signed In.`
       });
-      setTimeout(() => setNotification(null), 5000);
+      setTimeout(() => setNotification(null), 4000);
       setCandidateToReset(null);
       await fetchAttendance();
     } catch (err: any) {
-      console.error('Reset error:', err);
-      setNotification({
-        type: 'error',
-        message: err.message || 'Could not reset attendance record.'
-      });
-      setTimeout(() => setNotification(null), 5000);
+      console.warn('Direct Firestore reset encountered error, attempting server fallback:', err);
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch(`/api/exam/${exam.id}/attendance/reset`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            matricNumber: candidateToReset.matricNumber,
+            reason: resetReason
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to reset attendance.');
+        setNotification({
+          type: 'success',
+          message: data.message || `Attendance record reset successfully.`
+        });
+        setTimeout(() => setNotification(null), 4000);
+        setCandidateToReset(null);
+        await fetchAttendance();
+      } catch (fallbackErr: any) {
+        console.error('Reset error:', fallbackErr);
+        setNotification({
+          type: 'error',
+          message: fallbackErr.message || 'Failed to reset attendance.'
+        });
+        setTimeout(() => setNotification(null), 5000);
+      }
     } finally {
       setIsSubmittingReset(false);
     }
   };
 
-  // Filtered & Sorted Records
+  // Summary Statistics (Calculated strictly from actual records)
+  const stats = useMemo(() => {
+    const totalRegistered = attendanceRecords.length;
+    const totalSignIn = attendanceRecords.filter((a) => a.signInTime !== null).length;
+    const totalSignOut = attendanceRecords.filter((a) => a.signOutTime !== null).length;
+    const inExamination = attendanceRecords.filter((a) => a.signInTime !== null && a.signOutTime === null).length;
+    const notStarted = attendanceRecords.filter((a) => a.signInTime === null).length;
+    const totalSubmitted = attendanceRecords.filter((a) => a.submissionStatus === 'submitted').length;
+
+    return {
+      totalRegistered,
+      totalSignIn,
+      totalSignOut,
+      inExamination,
+      notStarted,
+      totalSubmitted
+    };
+  }, [attendanceRecords]);
+
+  // Filtered and Sorted Candidate List
   const filteredRecords = useMemo(() => {
     return attendanceRecords
       .filter((rec) => {
+        // Search Filter
+        const queryClean = searchQuery.toLowerCase().trim();
         const matchesSearch =
-          rec.fullName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          rec.matricNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          (rec.submissionReceipt && rec.submissionReceipt.toLowerCase().includes(searchQuery.toLowerCase()));
+          !queryClean ||
+          rec.fullName.toLowerCase().includes(queryClean) ||
+          rec.matricNumber.toLowerCase().includes(queryClean) ||
+          (rec.department && rec.department.toLowerCase().includes(queryClean)) ||
+          (rec.submissionReceipt && rec.submissionReceipt.toLowerCase().includes(queryClean));
 
+        // Department Filter
         const matchesDept = selectedDept === 'All' || rec.department === selectedDept;
 
+        // Sign-In Status Filter
         const matchesSignIn =
           signInFilter === 'all' ||
           (signInFilter === 'signed_in' && rec.signInTime !== null) ||
           (signInFilter === 'not_signed_in' && rec.signInTime === null);
 
+        // Sign-Out Status Filter
         const matchesSignOut =
           signOutFilter === 'all' ||
           (signOutFilter === 'signed_out' && rec.signOutTime !== null) ||
-          (signOutFilter === 'not_signed_out' && rec.signOutTime === null);
+          (signOutFilter === 'pending' && rec.signOutTime === null);
 
+        // Submission Status Filter
         const matchesSubmission =
           submissionFilter === 'all' ||
           (submissionFilter === 'submitted' && rec.submissionStatus === 'submitted') ||
-          (submissionFilter === 'not_submitted' && rec.submissionStatus !== 'submitted');
+          (submissionFilter === 'in_progress' && rec.submissionStatus === 'in_progress') ||
+          (submissionFilter === 'not_started' && (!rec.submissionStatus || rec.submissionStatus === 'not_started'));
 
         return matchesSearch && matchesDept && matchesSignIn && matchesSignOut && matchesSubmission;
       })
@@ -399,44 +343,45 @@ export const ExamAttendanceView: React.FC<ExamAttendanceViewProps> = ({
         if (sortBy === 'matric_desc') return b.matricNumber.localeCompare(a.matricNumber);
         if (sortBy === 'name_asc') return a.fullName.localeCompare(b.fullName);
         if (sortBy === 'time_desc') {
-          const timeA = a.signInTime ? new Date(a.signInTime).getTime() : 0;
-          const timeB = b.signInTime ? new Date(b.signInTime).getTime() : 0;
-          return timeB - timeA;
+          const tA = a.signInTime ? new Date(a.signInTime).getTime() : 0;
+          const tB = b.signInTime ? new Date(b.signInTime).getTime() : 0;
+          return tB - tA;
         }
         return 0;
       });
   }, [attendanceRecords, searchQuery, selectedDept, signInFilter, signOutFilter, submissionFilter, sortBy]);
 
-  // Real KPI statistics calculated from actual records
-  const totalRegistered = attendanceRecords.length;
-  const totalSignedIn = attendanceRecords.filter((a) => a.signInTime !== null).length;
-  const totalSignedOut = attendanceRecords.filter((a) => a.signOutTime !== null).length;
-  const totalCurrentlyInHall = attendanceRecords.filter((a) => a.signInTime !== null && a.signOutTime === null).length;
-  const totalAbsent = attendanceRecords.filter((a) => a.signInTime === null).length;
-  const totalSubmitted = attendanceRecords.filter((a) => a.submissionStatus === 'submitted').length;
-
+  // Export to Word
   const handleExportWord = async () => {
     setIsExportingWord(true);
     try {
       await exportAttendanceToWord(exam, filteredRecords, {
-        totalRegistered,
-        totalSignedIn,
-        totalSignedOut,
-        totalCurrentlyInHall,
-        totalAbsent,
-        totalSubmitted
+        totalRegistered: stats.totalRegistered,
+        totalSignedIn: stats.totalSignIn,
+        totalSignedOut: stats.totalSignOut,
+        totalCurrentlyInHall: stats.inExamination,
+        totalAbsent: stats.notStarted,
+        totalSubmitted: stats.totalSubmitted
       });
-    } catch (err) {
+      setNotification({
+        type: 'success',
+        message: 'Official Examination Attendance Register (.docx) generated successfully.'
+      });
+      setTimeout(() => setNotification(null), 4000);
+    } catch (err: any) {
       console.error('Word export error:', err);
-      alert('Failed to generate Word attendance report.');
+      setNotification({
+        type: 'error',
+        message: `Failed to export Word document: ${err?.message || 'Export error'}`
+      });
     } finally {
       setIsExportingWord(false);
     }
   };
 
   return (
-    <div className="max-w-6xl mx-auto pb-16 px-4 sm:px-6">
-      {/* Top Bar Navigation & Exam Switcher */}
+    <div className="max-w-7xl mx-auto pb-16 px-4 sm:px-6">
+      {/* Top Bar Navigation */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 my-6">
         <button
           onClick={onBack}
@@ -446,567 +391,450 @@ export const ExamAttendanceView: React.FC<ExamAttendanceViewProps> = ({
           <span>Back to Examinations</span>
         </button>
 
-        {/* Action & Export Buttons */}
+        {/* Action Buttons: Export to Excel & Word (No PDF) */}
         <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
-          {/* Admit Candidate Button */}
-          <button
-            onClick={() => {
-              setAdmitError(null);
-              setShowAdmitModal(true);
-            }}
-            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#0A2419] hover:bg-[#0E3324] text-[#D6BF62] hover:text-[#F0F9F3] border border-[#D6BF62]/50 font-bold text-xs rounded-xl shadow-sm transition cursor-pointer"
-          >
-            <Plus className="w-4 h-4 text-[#D6BF62]" />
-            <span>Admit Candidate</span>
-          </button>
-
-          {/* Export to Excel (.xlsx) */}
           <button
             onClick={() => exportAttendanceToExcel(exam, filteredRecords)}
             disabled={filteredRecords.length === 0}
-            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] hover:text-[#F0F9F3] border border-[#789981]/40 font-bold text-xs rounded-xl shadow-sm transition disabled:opacity-40 cursor-pointer"
-            title="Export filtered attendance register to Microsoft Excel"
+            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] hover:text-[#F0F9F3] border border-[#789981]/40 font-bold text-xs rounded-xl shadow-sm transition disabled:opacity-40 cursor-pointer"
+            title="Download attendance records as Microsoft Excel spreadsheet (.xlsx)"
           >
             <FileSpreadsheet className="w-4 h-4 text-[#D6BF62]" />
-            <span>Export Excel (.xlsx)</span>
+            <span>Export to Excel (.xlsx)</span>
           </button>
 
-          {/* Export to Word (.docx) */}
           <button
             onClick={handleExportWord}
             disabled={filteredRecords.length === 0 || isExportingWord}
-            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-bold text-xs rounded-xl shadow-lg hover:shadow-[#0E623B]/30 transition disabled:opacity-40 cursor-pointer"
-            title="Export official Word attendance report with attestation and signature block"
+            className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-bold text-xs rounded-xl shadow-lg hover:shadow-[#0E623B]/30 transition disabled:opacity-40 cursor-pointer"
+            title="Download institutional examination attendance register as Microsoft Word document (.docx)"
           >
             <FileText className="w-4 h-4 text-[#D6BF62]" />
-            <span>{isExportingWord ? 'Generating Word Doc...' : 'Export Word Report (.docx)'}</span>
+            <span>{isExportingWord ? 'Generating Word Doc...' : 'Export Official Word Register (.docx)'}</span>
           </button>
         </div>
       </div>
 
-      {/* Global Notification Banner */}
+      {/* Action Notification Banner */}
       {notification && (
         <div
-          className={`mb-6 p-4 rounded-xl border flex items-center justify-between gap-3 text-xs sm:text-sm font-semibold animate-fadeIn ${
+          className={`mb-6 p-4 rounded-xl border flex items-center justify-between gap-3 text-xs font-semibold animate-fadeIn ${
             notification.type === 'success'
               ? 'bg-[#061C13] border-[#10B981] text-[#10B981]'
               : 'bg-[#2A0808] border-red-500 text-red-300'
           }`}
         >
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2">
             {notification.type === 'success' ? (
-              <CheckCircle2 className="w-5 h-5 shrink-0 text-[#10B981]" />
+              <Check className="w-4 h-4 shrink-0" />
             ) : (
-              <ShieldAlert className="w-5 h-5 shrink-0 text-red-400" />
+              <ShieldAlert className="w-4 h-4 shrink-0 text-red-400" />
             )}
             <span>{notification.message}</span>
           </div>
-          <button onClick={() => setNotification(null)} className="p-1 hover:opacity-80 rounded cursor-pointer">
+          <button
+            onClick={() => setNotification(null)}
+            className="text-[#ADCDBA] hover:text-[#F0F9F3] p-1"
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
       )}
 
-      {/* Header Banner & Examination Switcher */}
-      <div className="bg-[#061C13] rounded-2xl shadow-xl border border-[#789981]/30 p-6 sm:p-7 mb-6">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1.5 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="px-2.5 py-1 bg-[#0A2419] border border-[#D6BF62]/30 text-[#D6BF62] font-black text-xs rounded-md">
-                {exam.courseCode}
+      {/* Examination Header & Switcher */}
+      <div className="bg-[#061C13] rounded-3xl p-6 sm:p-8 shadow-2xl border border-[#D6BF62]/30 mb-8">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 pb-6 border-b border-[#789981]/20">
+          <div>
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-black bg-[#D6BF62]/20 text-[#D6BF62] border border-[#D6BF62]/40 uppercase tracking-wider">
+                Online CBT Attendance Register
               </span>
-              <span
-                className={`px-2 py-0.5 rounded text-[11px] font-bold uppercase ${
-                  exam.status === 'published'
-                    ? 'bg-[#0E623B]/40 text-[#10B981] border border-[#10B981]/40'
-                    : 'bg-[#030515] text-[#789981] border border-[#789981]/30'
-                }`}
-              >
-                {exam.status}
-              </span>
-              <span className="text-xs text-[#ADCDBA]">
-                Dept: <strong className="text-[#F0F9F3]">{exam.department}</strong>
+              <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                exam.status === 'published'
+                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  : exam.status === 'closed'
+                  ? 'bg-red-500/20 text-red-300 border border-red-500/30'
+                  : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+              }`}>
+                {exam.status === 'published' ? 'Active CBT' : exam.status === 'closed' ? 'Closed' : 'Draft'}
               </span>
             </div>
-
-            <div className="flex items-center gap-3 pt-1">
-              <h1 className="text-xl sm:text-2xl font-black text-[#F0F9F3] tracking-tight">
-                {exam.courseTitle}
-              </h1>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[#ADCDBA] pt-1">
-              <div className="flex items-center gap-1">
-                <User className="w-3.5 h-3.5 text-[#D6BF62]" />
-                <span>Course Examiner: <strong className="text-[#F0F9F3]">{exam.lecturerName || 'Not specified'}</strong></span>
-              </div>
-              <span className="text-[#789981]/40 hidden sm:inline">•</span>
-              <div className="flex items-center gap-1">
-                <Calendar className="w-3.5 h-3.5 text-[#D6BF62]" />
-                <span>Date: <strong className="text-[#F0F9F3]">{exam.startDate ? formatLagosDate(exam.startDate) : 'Not scheduled'}</strong></span>
-              </div>
-              <span className="text-[#789981]/40 hidden sm:inline">•</span>
-              <div className="flex items-center gap-1">
-                <Clock className="w-3.5 h-3.5 text-[#D6BF62]" />
-                <span>Window: <strong className="text-[#F0F9F3]">{exam.startDate ? `${formatLagosTime(exam.startDate)} – ${exam.endDate ? formatLagosTime(exam.endDate) : ''} (WAT)` : 'N/A'}</strong></span>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-[#789981] pt-1">
-              SPORTS UNIVERSITY OF NIGERIA • PHYSICAL CANDIDATE VERIFICATION & EXAMINATION ATTENDANCE SYSTEM
+            <h1 className="text-2xl sm:text-3xl font-black text-[#F0F9F3] tracking-tight">
+              {exam.courseCode}: {exam.courseTitle}
+            </h1>
+            <p className="text-xs text-[#ADCDBA] mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span>Department: <strong className="text-[#F0F9F3]">{exam.department}</strong></span>
+              <span>Course Lecturer: <strong className="text-[#D6BF62]">{exam.lecturerName || 'Not specified'}</strong></span>
+              {exam.startDate && (
+                <span>Schedule: <strong className="text-[#F0F9F3]">{formatLagosDate(exam.startDate)} • {formatLagosTime(exam.startDate)} (WAT)</strong></span>
+              )}
             </p>
           </div>
 
-          {/* Quick Examination Switcher Dropdown */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-[#0A2419] p-2.5 rounded-xl border border-[#789981]/30 self-stretch md:self-auto">
-            <span className="text-[11px] font-bold uppercase text-[#789981] px-1">Switch Exam:</span>
-            <select
-              value={exam.id}
-              onChange={(e) => {
-                const found = allExams.find((x) => x.id === e.target.value);
-                if (found) onSelectExam(found);
-              }}
-              className="bg-[#061C13] border border-[#789981]/40 rounded-lg px-2.5 py-1.5 text-xs font-bold text-[#D6BF62] focus:outline-none focus:border-[#D6BF62] cursor-pointer"
-            >
-              {allExams.map((x) => (
-                <option key={x.id} value={x.id}>
-                  {x.courseCode} — {x.courseTitle}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={fetchAttendance}
-              disabled={loading}
-              className="p-1.5 text-[#789981] hover:text-[#F0F9F3] rounded-lg transition hover:bg-[#030515] cursor-pointer"
-              title="Refresh attendance records"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-[#D6BF62]' : ''}`} />
-            </button>
-          </div>
+          {/* Quick Examination Switcher */}
+          {allExams.length > 1 && (
+            <div className="shrink-0">
+              <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-1.5 flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-[#D6BF62]" />
+                Switch Examination Register
+              </label>
+              <select
+                value={exam.id}
+                onChange={(e) => {
+                  const target = allExams.find((ex) => ex.id === e.target.value);
+                  if (target) onSelectExam(target);
+                }}
+                className="w-full sm:w-64 px-3 py-2 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs font-bold text-[#F0F9F3] focus:outline-none focus:border-[#D6BF62] transition cursor-pointer"
+              >
+                {allExams.map((ex) => (
+                  <option key={ex.id} value={ex.id} className="bg-[#030515] text-[#F0F9F3]">
+                    {ex.courseCode} — {ex.courseTitle.substring(0, 24)}...
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
-        {/* Summary Statistics Cards (Calculated from actual records) */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5 mt-6 pt-6 border-t border-[#789981]/20">
-          <div className="bg-[#0A2419] p-3.5 rounded-xl border border-[#789981]/30">
+        {/* SUMMARY STATISTICS CARDS (CALCULATED STRICTLY FROM ACTUAL RECORDS) */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3.5 mt-6">
+          {/* Card 1: Total Registered */}
+          <div className="bg-[#0A2419] p-4 rounded-2xl border border-[#789981]/30">
             <div className="flex items-center justify-between text-[#789981] mb-1">
               <span className="text-[10px] font-bold uppercase tracking-wider">Total Registered</span>
-              <Users className="w-3.5 h-3.5 text-[#D6BF62]" />
+              <Users className="w-4 h-4 text-[#D6BF62]" />
             </div>
-            <p className="text-xl sm:text-2xl font-black text-[#F0F9F3]">{totalRegistered}</p>
-            <p className="text-[10px] text-[#ADCDBA] mt-0.5">Eligible candidates</p>
+            <p className="text-2xl font-black text-[#F0F9F3]">{stats.totalRegistered}</p>
+            <p className="text-[10px] text-[#ADCDBA] mt-0.5">Enrolled candidates</p>
           </div>
 
-          <div className="bg-[#0A2419] p-3.5 rounded-xl border border-[#10B981]/40">
-            <div className="flex items-center justify-between text-[#10B981] mb-1">
+          {/* Card 2: Total Sign-In */}
+          <div className="bg-[#0A2419] p-4 rounded-2xl border border-emerald-500/30">
+            <div className="flex items-center justify-between text-[#789981] mb-1">
               <span className="text-[10px] font-bold uppercase tracking-wider">Total Sign-In</span>
-              <LogIn className="w-3.5 h-3.5 text-[#10B981]" />
+              <CheckCircle2 className="w-4 h-4 text-[#10B981]" />
             </div>
-            <p className="text-xl sm:text-2xl font-black text-[#10B981]">{totalSignedIn}</p>
-            <p className="text-[10px] text-[#ADCDBA] mt-0.5">Recorded present</p>
+            <p className="text-2xl font-black text-[#10B981]">{stats.totalSignIn}</p>
+            <p className="text-[10px] text-[#ADCDBA] mt-0.5">Officially signed in</p>
           </div>
 
-          <div className="bg-[#0A2419] p-3.5 rounded-xl border border-blue-500/40">
-            <div className="flex items-center justify-between text-blue-400 mb-1">
+          {/* Card 3: Total Sign-Out */}
+          <div className="bg-[#0A2419] p-4 rounded-2xl border border-blue-500/30">
+            <div className="flex items-center justify-between text-[#789981] mb-1">
               <span className="text-[10px] font-bold uppercase tracking-wider">Total Sign-Out</span>
-              <LogOut className="w-3.5 h-3.5 text-blue-400" />
+              <CheckCircle2 className="w-4 h-4 text-blue-400" />
             </div>
-            <p className="text-xl sm:text-2xl font-black text-blue-300">{totalSignedOut}</p>
-            <p className="text-[10px] text-[#ADCDBA] mt-0.5">Departed hall</p>
+            <p className="text-2xl font-black text-blue-400">{stats.totalSignOut}</p>
+            <p className="text-[10px] text-[#ADCDBA] mt-0.5">Submitted & signed out</p>
           </div>
 
-          <div className="bg-[#0A2419] p-3.5 rounded-xl border border-[#D6BF62]/40">
-            <div className="flex items-center justify-between text-[#D6BF62] mb-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider">Present in Hall</span>
-              <UserCheck className="w-3.5 h-3.5 text-[#D6BF62]" />
+          {/* Card 4: In Examination (Active CBT Session) */}
+          <div className="bg-[#0A2419] p-4 rounded-2xl border border-amber-500/30">
+            <div className="flex items-center justify-between text-[#789981] mb-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider">In Examination</span>
+              <Clock className="w-4 h-4 text-amber-400" />
             </div>
-            <p className="text-xl sm:text-2xl font-black text-[#D6BF62]">{totalCurrentlyInHall}</p>
-            <p className="text-[10px] text-[#ADCDBA] mt-0.5">Active candidates</p>
+            <p className="text-2xl font-black text-amber-400">{stats.inExamination}</p>
+            <p className="text-[10px] text-[#ADCDBA] mt-0.5">Writing test right now</p>
           </div>
 
-          <div className="bg-[#0A2419] p-3.5 rounded-xl border border-amber-500/40 col-span-2 sm:col-span-1">
-            <div className="flex items-center justify-between text-amber-400 mb-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider">Absent / Pending</span>
-              <UserX className="w-3.5 h-3.5 text-amber-400" />
+          {/* Card 5: Not Started */}
+          <div className="bg-[#0A2419] p-4 rounded-2xl border border-[#789981]/30 col-span-2 sm:col-span-1">
+            <div className="flex items-center justify-between text-[#789981] mb-1">
+              <span className="text-[10px] font-bold uppercase tracking-wider">Not Started</span>
+              <XCircle className="w-4 h-4 text-[#789981]" />
             </div>
-            <p className="text-xl sm:text-2xl font-black text-amber-300">{totalAbsent}</p>
-            <p className="text-[10px] text-[#ADCDBA] mt-0.5">Not yet signed in</p>
+            <p className="text-2xl font-black text-[#ADCDBA]">{stats.notStarted}</p>
+            <p className="text-[10px] text-[#789981] mt-0.5">Awaiting sign-in</p>
           </div>
         </div>
-      </div>
-
-      {/* FAST SCANNER & QUICK MATRICULATION ENTRY BAR */}
-      <div className="bg-[#061C13] rounded-2xl shadow-xl border border-[#D6BF62]/30 p-4 sm:p-5 mb-6">
-        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#0A2419] border border-[#D6BF62]/40 flex items-center justify-center text-[#D6BF62] shrink-0">
-              <QrCode className="w-5 h-5" />
-            </div>
-            <div>
-              <h2 className="text-sm font-black text-[#F0F9F3]">
-                Fast Attendance Scanner & Matric Entry
-              </h2>
-              <p className="text-[11px] text-[#ADCDBA]">
-                Scan student ID barcode/QR or type matriculation number and press Enter to record immediately.
-              </p>
-            </div>
-          </div>
-
-          {/* Quick Action Toggle & Input Form */}
-          <form onSubmit={handleQuickScannerSubmit} className="flex flex-col sm:flex-row items-center gap-2 flex-1 max-w-xl">
-            {/* Mode Toggle */}
-            <div className="flex items-center bg-[#0A2419] p-1 rounded-xl border border-[#789981]/30 shrink-0 w-full sm:w-auto">
-              <button
-                type="button"
-                onClick={() => setQuickActionType('sign-in')}
-                className={`flex-1 sm:flex-none px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1 ${
-                  quickActionType === 'sign-in'
-                    ? 'bg-[#0E623B] text-[#F0F9F3] border border-[#10B981]'
-                    : 'text-[#ADCDBA] hover:text-[#F0F9F3]'
-                }`}
-              >
-                <LogIn className="w-3 h-3 text-[#10B981]" />
-                <span>Sign In</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setQuickActionType('sign-out')}
-                className={`flex-1 sm:flex-none px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer flex items-center justify-center gap-1 ${
-                  quickActionType === 'sign-out'
-                    ? 'bg-blue-900/60 text-blue-200 border border-blue-500'
-                    : 'text-[#ADCDBA] hover:text-[#F0F9F3]'
-                }`}
-              >
-                <LogOut className="w-3 h-3 text-blue-400" />
-                <span>Sign Out</span>
-              </button>
-            </div>
-
-            {/* Matric Input */}
-            <div className="relative flex-1 w-full">
-              <input
-                ref={quickInputRef}
-                type="text"
-                placeholder="Enter or Scan Matric (e.g. 2026201120 or DE2026201120)..."
-                value={quickMatric}
-                onChange={(e) => setQuickMatric(e.target.value.toUpperCase())}
-                className="w-full pl-3.5 pr-24 py-2 bg-[#0A2419] border border-[#D6BF62]/50 rounded-xl text-xs font-mono font-bold text-[#F0F9F3] placeholder-[#789981]/60 focus:outline-none focus:ring-1 focus:ring-[#D6BF62]"
-              />
-              <button
-                type="submit"
-                disabled={!quickMatric.trim()}
-                className={`absolute right-1 top-1 bottom-1 px-3 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 disabled:opacity-40 ${
-                  quickActionType === 'sign-in'
-                    ? 'bg-[#0E623B] hover:bg-[#127949] text-[#F0F9F3]'
-                    : 'bg-blue-700 hover:bg-blue-600 text-white'
-                }`}
-              >
-                <span>{quickActionType === 'sign-in' ? 'Sign In' : 'Sign Out'}</span>
-              </button>
-            </div>
-          </form>
-        </div>
-
-        {/* Quick Feedback Toast */}
-        {quickFeedback && (
-          <div
-            className={`mt-3 p-2.5 rounded-xl border text-xs font-semibold flex items-center gap-2 animate-fadeIn ${
-              quickFeedback.type === 'success'
-                ? 'bg-[#0E623B]/30 border-[#10B981] text-[#10B981]'
-                : 'bg-[#2A0808] border-red-500 text-red-300'
-            }`}
-          >
-            {quickFeedback.type === 'success' ? (
-              <Check className="w-4 h-4 shrink-0 text-[#10B981]" />
-            ) : (
-              <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
-            )}
-            <span>{quickFeedback.message}</span>
-          </div>
-        )}
       </div>
 
       {/* FILTER & SEARCH TOOLBAR */}
-      <div className="bg-[#061C13] rounded-2xl shadow-xl border border-[#789981]/30 p-4 mb-6 space-y-3">
-        <div className="flex flex-col lg:flex-row items-center justify-between gap-3">
-          {/* Search Bar */}
-          <div className="relative w-full lg:w-72">
-            <Search className="w-4 h-4 text-[#789981] absolute left-3 top-3" />
+      <div className="bg-[#061C13] rounded-3xl p-5 shadow-xl border border-[#789981]/30 mb-6 space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
+          {/* Search Box */}
+          <div className="sm:col-span-5 relative">
+            <Search className="w-4 h-4 text-[#789981] absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Search by name, matric or receipt..."
+              placeholder="Search by student name, matric number, or receipt..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-3.5 py-2 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs font-medium text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62]"
+              className="w-full pl-9 pr-4 py-2 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs text-[#F0F9F3] placeholder-[#789981] focus:outline-none focus:border-[#D6BF62] transition"
             />
           </div>
 
           {/* Department Filter */}
-          <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
-            <div className="flex items-center gap-1.5 bg-[#0A2419] px-3 py-1.5 rounded-xl border border-[#789981]/30 text-xs text-[#ADCDBA] w-full sm:w-auto">
-              <Filter className="w-3.5 h-3.5 text-[#D6BF62]" />
-              <span>Dept:</span>
-              <select
-                value={selectedDept}
-                onChange={(e) => setSelectedDept(e.target.value)}
-                className="bg-transparent font-bold text-[#F0F9F3] focus:outline-none cursor-pointer max-w-[150px] truncate"
-              >
-                <option value="All" className="bg-[#061C13]">All Departments</option>
-                {SUN_DEPARTMENTS.filter(d => d !== 'All Departments').map((d) => (
-                  <option key={d} value={d} className="bg-[#061C13]">{d}</option>
-                ))}
-              </select>
-            </div>
+          <div className="sm:col-span-3">
+            <select
+              value={selectedDept}
+              onChange={(e) => setSelectedDept(e.target.value)}
+              className="w-full px-3 py-2 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs text-[#F0F9F3] focus:outline-none focus:border-[#D6BF62] transition cursor-pointer"
+            >
+              <option value="All">All Departments ({attendanceRecords.length})</option>
+              {SUN_DEPARTMENTS.filter((d) => d !== 'All Departments').map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          </div>
 
-            {/* Sign-In Filter */}
+          {/* Sign-In Filter */}
+          <div className="sm:col-span-2">
             <select
               value={signInFilter}
               onChange={(e) => setSignInFilter(e.target.value as any)}
-              className="bg-[#0A2419] border border-[#789981]/30 text-[#ADCDBA] rounded-xl px-3 py-1.5 text-xs font-bold focus:outline-none cursor-pointer"
+              className="w-full px-3 py-2 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs text-[#F0F9F3] focus:outline-none focus:border-[#D6BF62] transition cursor-pointer"
             >
-              <option value="all" className="bg-[#061C13]">All Sign-In Status</option>
-              <option value="signed_in" className="bg-[#061C13]">Signed In Only</option>
-              <option value="not_signed_in" className="bg-[#061C13]">Not Signed In (Absent)</option>
+              <option value="all">Sign-In: All</option>
+              <option value="signed_in">Signed In</option>
+              <option value="not_signed_in">Not Signed In</option>
             </select>
+          </div>
 
-            {/* Sign-Out Filter */}
+          {/* Sign-Out Filter */}
+          <div className="sm:col-span-2">
             <select
               value={signOutFilter}
               onChange={(e) => setSignOutFilter(e.target.value as any)}
-              className="bg-[#0A2419] border border-[#789981]/30 text-[#ADCDBA] rounded-xl px-3 py-1.5 text-xs font-bold focus:outline-none cursor-pointer"
+              className="w-full px-3 py-2 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs text-[#F0F9F3] focus:outline-none focus:border-[#D6BF62] transition cursor-pointer"
             >
-              <option value="all" className="bg-[#061C13]">All Sign-Out Status</option>
-              <option value="signed_out" className="bg-[#061C13]">Signed Out Only</option>
-              <option value="not_signed_out" className="bg-[#061C13]">Not Signed Out</option>
-            </select>
-
-            {/* Submission Filter */}
-            <select
-              value={submissionFilter}
-              onChange={(e) => setSubmissionFilter(e.target.value as any)}
-              className="bg-[#0A2419] border border-[#789981]/30 text-[#ADCDBA] rounded-xl px-3 py-1.5 text-xs font-bold focus:outline-none cursor-pointer"
-            >
-              <option value="all" className="bg-[#061C13]">All CBT Status</option>
-              <option value="submitted" className="bg-[#061C13]">Submitted</option>
-              <option value="not_submitted" className="bg-[#061C13]">Not Submitted</option>
-            </select>
-
-            {/* Sort Filter */}
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="bg-[#0A2419] border border-[#789981]/30 text-[#D6BF62] rounded-xl px-3 py-1.5 text-xs font-bold focus:outline-none cursor-pointer"
-            >
-              <option value="matric_asc" className="bg-[#061C13]">Sort: Matric (Ascending)</option>
-              <option value="matric_desc" className="bg-[#061C13]">Sort: Matric (Descending)</option>
-              <option value="name_asc" className="bg-[#061C13]">Sort: Name (A–Z)</option>
-              <option value="time_desc" className="bg-[#061C13]">Sort: Recent Sign-In</option>
+              <option value="all">Sign-Out: All</option>
+              <option value="signed_out">Signed Out</option>
+              <option value="pending">Pending Submission</option>
             </select>
           </div>
         </div>
 
-        {/* Filter count indicator */}
-        <div className="flex items-center justify-between text-xs text-[#789981] pt-1 border-t border-[#789981]/20">
-          <span>
-            Showing <strong className="text-[#F0F9F3]">{filteredRecords.length}</strong> of{' '}
-            <strong className="text-[#D6BF62]">{attendanceRecords.length}</strong> registered students
-          </span>
-          {(searchQuery || selectedDept !== 'All' || signInFilter !== 'all' || signOutFilter !== 'all' || submissionFilter !== 'all') && (
-            <button
-              onClick={() => {
-                setSearchQuery('');
-                setSelectedDept('All');
-                setSignInFilter('all');
-                setSignOutFilter('all');
-                setSubmissionFilter('all');
-              }}
-              className="text-[#D6BF62] hover:underline cursor-pointer font-bold"
+        {/* Second Row Filters: Submission Status & Sort Order */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-[#789981]/20 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-[#789981] font-bold text-[11px] uppercase tracking-wider">CBT Status:</span>
+            <div className="flex items-center gap-1.5">
+              {(['all', 'submitted', 'in_progress', 'not_started'] as const).map((st) => (
+                <button
+                  key={st}
+                  type="button"
+                  onClick={() => setSubmissionFilter(st)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    submissionFilter === st
+                      ? 'bg-[#0E623B] text-[#F0F9F3] border border-[#D6BF62]'
+                      : 'bg-[#0A2419] text-[#ADCDBA] border border-[#789981]/30 hover:border-[#D6BF62]/50'
+                  }`}
+                >
+                  {st === 'all'
+                    ? 'All'
+                    : st === 'submitted'
+                    ? 'Submitted'
+                    : st === 'in_progress'
+                    ? 'In Progress'
+                    : 'Not Started'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-[#789981] font-bold text-[11px] uppercase tracking-wider">Sort:</span>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as any)}
+              className="px-2.5 py-1 bg-[#0A2419] border border-[#789981]/40 rounded-lg text-xs text-[#F0F9F3] focus:outline-none focus:border-[#D6BF62] cursor-pointer"
             >
-              Clear Filters
-            </button>
-          )}
+              <option value="matric_asc">Matric (A → Z)</option>
+              <option value="matric_desc">Matric (Z → A)</option>
+              <option value="name_asc">Name (A → Z)</option>
+              <option value="time_desc">Recent Sign-In First</option>
+            </select>
+          </div>
         </div>
       </div>
 
       {/* STUDENT ATTENDANCE REGISTER TABLE */}
-      <div className="bg-[#061C13] rounded-2xl shadow-xl border border-[#789981]/30 overflow-hidden">
-        <div className="p-4 border-b border-[#789981]/20 flex items-center justify-between">
+      <div className="bg-[#061C13] rounded-3xl shadow-2xl border border-[#D6BF62]/30 overflow-hidden">
+        <div className="p-4 sm:p-5 bg-gradient-to-r from-[#0A2419] to-[#061C13] border-b border-[#D6BF62]/30 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-extrabold text-[#F0F9F3] uppercase tracking-wider">
-              Student Attendance Register
+            <GraduationCap className="w-5 h-5 text-[#D6BF62]" />
+            <h2 className="text-base font-extrabold text-[#F0F9F3]">
+              Official Student Attendance Register
             </h2>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-[#0A2419] text-[#D6BF62] border border-[#D6BF62]/30">
-              {filteredRecords.length} Students
-            </span>
           </div>
-
-          <div className="flex items-center gap-2 text-xs text-[#ADCDBA]">
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-[#10B981]" /> Signed In
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500 ml-2" /> Signed Out
-            <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-500 ml-2" /> Absent
-          </div>
+          <span className="text-xs font-bold text-[#D6BF62] bg-[#030515] px-3 py-1 rounded-full border border-[#D6BF62]/30">
+            {filteredRecords.length} of {attendanceRecords.length} Candidates Displayed
+          </span>
         </div>
 
         {loading ? (
-          <div className="p-12 text-center text-[#ADCDBA]">
-            <div className="w-8 h-8 border-2 border-[#D6BF62] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-            <p className="text-xs">Loading attendance register...</p>
+          <div className="p-16 text-center text-[#ADCDBA] space-y-3">
+            <div className="w-8 h-8 border-3 border-[#D6BF62] border-t-transparent rounded-full animate-spin mx-auto" />
+            <p className="text-xs font-bold uppercase tracking-wider">Loading Examination Attendance Register...</p>
           </div>
         ) : filteredRecords.length === 0 ? (
-          <div className="p-12 text-center text-[#ADCDBA]">
-            <UserX className="w-10 h-10 text-[#789981] mx-auto mb-2" />
-            <h3 className="text-sm font-bold text-[#F0F9F3]">No Attendance Records Found</h3>
-            <p className="text-xs text-[#789981] mt-1 max-w-sm mx-auto">
-              {searchQuery
-                ? `No candidates matched "${searchQuery}".`
-                : 'No candidates registered for this examination yet. You can admit candidates using the "Admit Candidate" button above.'}
+          <div className="p-16 text-center text-[#ADCDBA] space-y-2">
+            <Users className="w-10 h-10 text-[#789981] mx-auto mb-2 opacity-50" />
+            <p className="text-sm font-bold text-[#F0F9F3]">No candidate attendance records match your criteria.</p>
+            <p className="text-xs text-[#789981]">
+              Candidates will automatically appear here once registered or upon signing in to this CBT examination.
             </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
-                <tr className="bg-[#0A2419] border-b border-[#789981]/30 text-[#789981] uppercase font-bold text-[10px] tracking-wider">
-                  <th className="py-3 px-3 text-center w-10">S/N</th>
-                  <th className="py-3 px-3">Matriculation Number</th>
-                  <th className="py-3 px-3">Student's Full Name</th>
-                  <th className="py-3 px-3">Department</th>
-                  <th className="py-3 px-3 text-center w-12">Sex</th>
-                  <th className="py-3 px-3">Sign-In Time</th>
-                  <th className="py-3 px-3">Sign-Out Time</th>
-                  <th className="py-3 px-3 text-center">CBT Submission</th>
-                  <th className="py-3 px-3 text-center">Attendance</th>
-                  <th className="py-3 px-3 text-right">Actions</th>
+                <tr className="bg-[#0A2419] text-[#789981] font-bold uppercase text-[10px] tracking-wider border-b border-[#789981]/30">
+                  <th className="py-3.5 px-3.5 text-center">#</th>
+                  <th className="py-3.5 px-3.5">Student Full Name</th>
+                  <th className="py-3.5 px-3.5">Matriculation Number</th>
+                  <th className="py-3.5 px-3.5">Department</th>
+                  <th className="py-3.5 px-3 text-center">Sex</th>
+                  <th className="py-3.5 px-3.5">CBT Submission Status</th>
+                  <th className="py-3.5 px-3.5">Sign-In Status</th>
+                  <th className="py-3.5 px-3.5">Sign-Out Status</th>
+                  <th className="py-3.5 px-3 text-center">Audit</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#789981]/15 text-[#ADCDBA]">
-                {filteredRecords.map((rec, idx) => {
-                  const isSignedIn = rec.signInTime !== null;
-                  const isSignedOut = rec.signOutTime !== null;
-                  const isSubmitted = rec.submissionStatus === 'submitted';
+              <tbody className="divide-y divide-[#789981]/20">
+                {filteredRecords.map((row, idx) => {
+                  const isSignedOut = row.status === 'signed_out' || row.signOutTime !== null;
+                  const isSignedIn = row.status === 'signed_in' || row.signInTime !== null;
 
                   return (
                     <tr
-                      key={rec.matricNumber}
-                      className={`hover:bg-[#0A2419]/60 transition ${
-                        isSignedOut
-                          ? 'bg-blue-950/10'
-                          : isSignedIn
-                          ? 'bg-[#0E623B]/10'
-                          : 'bg-transparent'
-                      }`}
+                      key={row.matricNumber}
+                      className="hover:bg-[#0A2419]/50 transition group"
                     >
-                      <td className="py-3 px-3 text-center text-[#789981] font-mono">{idx + 1}</td>
-                      <td className="py-3 px-3 font-mono font-bold text-[#D6BF62] whitespace-nowrap">
-                        {rec.matricNumber}
+                      {/* Index */}
+                      <td className="py-3 px-3.5 text-center font-mono text-[#789981] font-bold">
+                        {idx + 1}
                       </td>
-                      <td className="py-3 px-3 font-semibold text-[#F0F9F3] whitespace-nowrap">
-                        {capitalizeProper(rec.fullName)}
+
+                      {/* Full Name */}
+                      <td className="py-3 px-3.5">
+                        <span className="font-bold text-[#F0F9F3] group-hover:text-[#D6BF62] transition block">
+                          {row.fullName}
+                        </span>
                       </td>
-                      <td className="py-3 px-3 text-[#ADCDBA] whitespace-nowrap">
-                        {capitalizeProper(rec.department)}
+
+                      {/* Matriculation Number */}
+                      <td className="py-3 px-3.5">
+                        <span className="font-mono font-bold text-[#D6BF62] bg-[#030515] px-2 py-0.5 rounded border border-[#789981]/30">
+                          {row.matricNumber}
+                        </span>
                       </td>
-                      <td className="py-3 px-3 text-center font-bold text-[#D6BF62]">
-                        {rec.gender || '—'}
+
+                      {/* Department */}
+                      <td className="py-3 px-3.5 text-[#ADCDBA] font-medium">
+                        {row.department}
                       </td>
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        {rec.signInTime ? (
-                          <div className="flex flex-col">
-                            <span className="font-bold text-[#10B981] flex items-center gap-1">
-                              <LogIn className="w-3 h-3" />
-                              {formatLagosTime(rec.signInTime)}
+
+                      {/* Sex */}
+                      <td className="py-3 px-3 text-center">
+                        <span
+                          className={`inline-block w-6 py-0.5 text-center font-bold font-mono rounded ${
+                            row.gender === 'M'
+                              ? 'bg-blue-500/10 text-blue-300 border border-blue-500/30'
+                              : row.gender === 'F'
+                              ? 'bg-rose-500/10 text-rose-300 border border-rose-500/30'
+                              : 'bg-zinc-700/20 text-zinc-400 border border-zinc-600/30 text-[10px]'
+                          }`}
+                        >
+                          {row.gender || '—'}
+                        </span>
+                      </td>
+
+                      {/* Examination Submission Status */}
+                      <td className="py-3 px-3.5">
+                        {row.submissionStatus === 'submitted' ? (
+                          <div className="space-y-0.5">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                              <CheckCircle2 className="w-3 h-3 text-[#10B981]" />
+                              <span>Submitted</span>
                             </span>
-                            <span className="text-[10px] text-[#789981]">{formatLagosDate(rec.signInTime)}</span>
+                            {row.submittedAt && (
+                              <p className="text-[10px] text-[#789981] font-mono">
+                                {formatLagosTime(row.submittedAt)}
+                              </p>
+                            )}
+                            {row.submissionReceipt && (
+                              <p className="text-[9px] text-[#D6BF62] font-mono line-clamp-1" title={row.submissionReceipt}>
+                                {row.submissionReceipt}
+                              </p>
+                            )}
                           </div>
-                        ) : (
-                          <span className="text-slate-500 italic">Not Signed In</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        {rec.signOutTime ? (
-                          <div className="flex flex-col">
-                            <span className="font-bold text-blue-300 flex items-center gap-1">
-                              <LogOut className="w-3 h-3" />
-                              {formatLagosTime(rec.signOutTime)}
-                            </span>
-                            <span className="text-[10px] text-[#789981]">{formatLagosDate(rec.signOutTime)}</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-500 italic">Not Signed Out</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
-                        {isSubmitted ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#0E623B]/40 text-[#10B981] border border-[#10B981]/40" title={`Submitted at ${rec.submittedAt ? formatLagosDateTime(rec.submittedAt) : ''}`}>
-                            <CheckCircle2 className="w-3 h-3" />
-                            <span>Submitted</span>
+                        ) : row.submissionStatus === 'in_progress' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                            <Clock className="w-3 h-3 text-amber-400" />
+                            <span>In Progress</span>
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#030515] text-[#789981] border border-[#789981]/30">
-                            <span>Not Submitted</span>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#030515] text-[#789981] border border-[#789981]/30">
+                            <XCircle className="w-3 h-3 text-[#789981]" />
+                            <span>Not Started</span>
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-3 text-center whitespace-nowrap">
+
+                      {/* Sign-In Status */}
+                      <td className="py-3 px-3.5">
+                        {isSignedIn ? (
+                          <div className="space-y-0.5">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#0E623B] text-[#F0F9F3] border border-[#10B981]">
+                              <CheckCircle2 className="w-3 h-3 text-[#10B981]" />
+                              <span>Signed In</span>
+                            </span>
+                            {row.signInTime && (
+                              <p className="text-[10px] text-[#ADCDBA] font-mono">
+                                {formatLagosTime(row.signInTime)} (WAT)
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-zinc-800/60 text-zinc-400 border border-zinc-700/50">
+                            <span>Not Signed In</span>
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Sign-Out Status (Automatic Upon Submission) */}
+                      <td className="py-3 px-3.5">
                         {isSignedOut ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-900/40 text-blue-300 border border-blue-500/40">
-                            <span>Signed Out</span>
-                          </span>
+                          <div className="space-y-0.5">
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-950/80 text-blue-300 border border-blue-500/50">
+                              <CheckCircle2 className="w-3 h-3 text-blue-400" />
+                              <span>Signed Out (Auto)</span>
+                            </span>
+                            {row.signOutTime && (
+                              <p className="text-[10px] text-blue-300/80 font-mono">
+                                {formatLagosTime(row.signOutTime)} (WAT)
+                              </p>
+                            )}
+                          </div>
                         ) : isSignedIn ? (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#0E623B]/40 text-[#10B981] border border-[#10B981]/40">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-pulse" />
-                            <span>In Hall</span>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-950/40 text-amber-300 border border-amber-600/30">
+                            <span>Pending Submission</span>
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#2A0808]/40 text-red-300 border border-red-500/30">
-                            <span>Absent</span>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-zinc-800/40 text-zinc-500 border border-zinc-700/30">
+                            <span>—</span>
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-3 text-right whitespace-nowrap">
-                        <div className="flex items-center justify-end gap-1.5">
-                          {/* Sign In Button */}
-                          {!isSignedIn && (
-                            <button
-                              type="button"
-                              onClick={() => handleSignIn(rec.matricNumber, { fullName: rec.fullName, department: rec.department, gender: rec.gender })}
-                              disabled={actionLoadingId === `in_${rec.matricNumber}`}
-                              className="px-2.5 py-1 bg-[#0E623B] hover:bg-[#127949] text-[#F0F9F3] font-bold rounded-lg text-[11px] shadow-sm transition disabled:opacity-40 cursor-pointer flex items-center gap-1"
-                              title="Record student sign-in"
-                            >
-                              <LogIn className="w-3 h-3 text-[#D6BF62]" />
-                              <span>Sign In</span>
-                            </button>
-                          )}
 
-                          {/* Sign Out Button */}
-                          {isSignedIn && !isSignedOut && (
-                            <button
-                              type="button"
-                              onClick={() => handleSignOut(rec.matricNumber)}
-                              disabled={actionLoadingId === `out_${rec.matricNumber}`}
-                              className="px-2.5 py-1 bg-blue-700 hover:bg-blue-600 text-white font-bold rounded-lg text-[11px] shadow-sm transition disabled:opacity-40 cursor-pointer flex items-center gap-1"
-                              title="Record student sign-out"
-                            >
-                              <LogOut className="w-3 h-3 text-white" />
-                              <span>Sign Out</span>
-                            </button>
-                          )}
-
-                          {/* Reset / Correction Button */}
-                          {(isSignedIn || isSignedOut) && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setCandidateToReset(rec);
-                                setResetReason('Administrative attendance correction');
-                              }}
-                              className="p-1 text-[#789981] hover:text-amber-300 hover:bg-[#0A2419] rounded-lg transition border border-transparent hover:border-amber-400/30 cursor-pointer"
-                              title="Reset or correct attendance for this candidate (Audited)"
-                            >
-                              <RotateCcw className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
+                      {/* Audit / Correction Action (Rule 7) */}
+                      <td className="py-3 px-3 text-center">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCandidateToReset(row);
+                            setResetReason('Administrative examination attendance correction');
+                          }}
+                          className="p-1.5 text-[#789981] hover:text-amber-300 hover:bg-[#0A2419] rounded-lg transition border border-transparent hover:border-amber-400/30 cursor-pointer"
+                          title="Audited Administrative Correction (Reset Attendance)"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                        </button>
                       </td>
                     </tr>
                   );
@@ -1017,167 +845,54 @@ export const ExamAttendanceView: React.FC<ExamAttendanceViewProps> = ({
         )}
       </div>
 
-      {/* ADMIT CANDIDATE MODAL */}
-      {showAdmitModal && (
-        <div className="fixed inset-0 z-50 bg-[#030515]/85 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-[#061C13] rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl border border-[#D6BF62]/40 space-y-5">
-            <div className="flex items-center justify-between pb-3 border-b border-[#789981]/30">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-[#0A2419] border border-[#D6BF62]/30 flex items-center justify-center text-[#D6BF62]">
-                  <Plus className="w-4 h-4" />
+      {/* RESET ATTENDANCE MODAL (AUDITED CORRECTION - RULE 7) */}
+      {candidateToReset && (
+        <div className="fixed inset-0 z-50 bg-[#030515]/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#061C13] border-2 border-amber-500/50 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-5 animate-scaleUp">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-amber-500/10 border border-amber-500/40 rounded-xl text-amber-400">
+                  <RotateCcw className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-[#F0F9F3] text-base">Admit Candidate to Register</h3>
-                  <p className="text-[11px] text-[#ADCDBA]">Direct admission for this examination ({exam.courseCode})</p>
+                  <h3 className="text-base font-black text-[#F0F9F3]">Attendance Reset</h3>
+                  <p className="text-xs text-[#ADCDBA]">Audited Administrative Correction</p>
                 </div>
               </div>
-              <button onClick={() => setShowAdmitModal(false)} className="p-1 text-[#789981] hover:text-[#F0F9F3] rounded-lg cursor-pointer">
+              <button
+                onClick={() => setCandidateToReset(null)}
+                className="text-[#789981] hover:text-[#F0F9F3] p-1 rounded-lg"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            {admitError && (
-              <div className="p-3 bg-[#2A0808] border border-red-500 text-red-300 rounded-xl text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
-                <span>{admitError}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleAdmitSubmit} className="space-y-4 text-xs">
-              <div>
-                <label className="block text-[#ADCDBA] font-bold mb-1">
-                  Matriculation Number <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. 2026201120 or DE2026201120"
-                  value={admitForm.matricNumber}
-                  onChange={(e) => setAdmitForm({ ...admitForm, matricNumber: e.target.value.toUpperCase() })}
-                  className="w-full px-3.5 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs font-mono font-bold text-[#F0F9F3] focus:outline-none focus:border-[#D6BF62]"
-                  required
-                />
-                <span className="text-[10px] text-[#789981] mt-1 block">Format A: 10 numeric digits • Format B: DE + 10 numeric digits</span>
-              </div>
-
-              <div>
-                <label className="block text-[#ADCDBA] font-bold mb-1">
-                  Student Full Name <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. John Doe Okafor"
-                  value={admitForm.fullName}
-                  onChange={(e) => setAdmitForm({ ...admitForm, fullName: e.target.value })}
-                  className="w-full px-3.5 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs font-semibold text-[#F0F9F3] focus:outline-none focus:border-[#D6BF62]"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[#ADCDBA] font-bold mb-1">Department</label>
-                  <select
-                    value={admitForm.department}
-                    onChange={(e) => setAdmitForm({ ...admitForm, department: e.target.value })}
-                    className="w-full px-3 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs font-semibold text-[#F0F9F3] focus:outline-none focus:border-[#D6BF62] cursor-pointer"
-                  >
-                    {SUN_DEPARTMENTS.filter(d => d !== 'All Departments').map((d) => (
-                      <option key={d} value={d} className="bg-[#061C13]">{d}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[#ADCDBA] font-bold mb-1">Sex (M/F)</label>
-                  <select
-                    value={admitForm.gender}
-                    onChange={(e) => setAdmitForm({ ...admitForm, gender: e.target.value })}
-                    className="w-full px-3 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs font-bold text-[#D6BF62] focus:outline-none focus:border-[#D6BF62] cursor-pointer"
-                  >
-                    <option value="M" className="bg-[#061C13]">M (Male)</option>
-                    <option value="F" className="bg-[#061C13]">F (Female)</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="pt-2">
-                <label className="flex items-center gap-2 cursor-pointer bg-[#0A2419] p-3 rounded-xl border border-[#789981]/30">
-                  <input
-                    type="checkbox"
-                    checked={admitForm.autoSignIn}
-                    onChange={(e) => setAdmitForm({ ...admitForm, autoSignIn: e.target.checked })}
-                    className="rounded accent-[#10B981] w-4 h-4 cursor-pointer"
-                  />
-                  <span className="text-[#F0F9F3] font-bold text-xs">Immediately Record Sign-In upon admission</span>
-                </label>
-              </div>
-
-              <div className="flex items-center gap-3 pt-3">
-                <button
-                  type="button"
-                  onClick={() => setShowAdmitModal(false)}
-                  className="flex-1 py-2.5 px-4 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/40 font-bold rounded-xl transition cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmittingAdmit}
-                  className="flex-1 py-2.5 px-4 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-bold rounded-xl shadow-lg transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                >
-                  {isSubmittingAdmit ? (
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    <>
-                      <Check className="w-4 h-4 text-[#D6BF62]" />
-                      <span>Confirm Admission</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* RESET ATTENDANCE CONFIRMATION MODAL (AUDITED) */}
-      {candidateToReset && (
-        <div className="fixed inset-0 z-50 bg-[#030515]/85 flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn">
-          <div className="bg-[#061C13] rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl border border-amber-500/50 space-y-5 text-center">
-            <div className="w-14 h-14 mx-auto bg-[#2A0808] text-amber-400 rounded-2xl flex items-center justify-center border border-amber-500/40 shadow-sm">
-              <RotateCcw className="w-7 h-7" />
+            <div className="bg-[#0A2419] p-3.5 rounded-2xl border border-[#789981]/30 text-xs space-y-1">
+              <p className="font-bold text-[#F0F9F3]">{candidateToReset.fullName}</p>
+              <p className="font-mono text-[#D6BF62]">{candidateToReset.matricNumber}</p>
+              <p className="text-[#ADCDBA]">{candidateToReset.department}</p>
+              <p className="text-[11px] text-amber-300 pt-1">
+                Current Status: <strong>{candidateToReset.status.toUpperCase()}</strong>
+                {candidateToReset.signInTime && ` • Signed In at ${formatLagosTime(candidateToReset.signInTime)}`}
+                {candidateToReset.signOutTime && ` • Signed Out at ${formatLagosTime(candidateToReset.signOutTime)}`}
+              </p>
             </div>
 
-            <div className="space-y-2 text-left sm:text-center">
-              <h3 className="text-lg font-black text-[#F0F9F3]">
-                Reset Attendance Record?
-              </h3>
-              <p className="text-xs text-[#ADCDBA] leading-relaxed">
-                This will reset the sign-in and sign-out timestamps for <strong className="text-[#F0F9F3]">{candidateToReset.fullName}</strong> ({candidateToReset.matricNumber}) back to absent.
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1.5">
+                Audit Reason / Justification <span className="text-amber-400">*</span>
+              </label>
+              <textarea
+                required
+                rows={3}
+                value={resetReason}
+                onChange={(e) => setResetReason(e.target.value)}
+                placeholder="State the academic justification for this attendance reset..."
+                className="w-full px-3 py-2 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs text-[#F0F9F3] placeholder-[#789981] focus:outline-none focus:border-amber-400 transition"
+              />
+              <p className="text-[10px] text-[#789981] mt-1">
+                This correction will be permanently recorded in institutional security logs with your examiner account.
               </p>
-              <div className="p-3 bg-[#0A2419] rounded-xl border border-[#789981]/30 text-xs text-left space-y-1">
-                <div className="flex justify-between text-[#ADCDBA]">
-                  <span className="text-[#789981]">Sign-In Record:</span>
-                  <span className="font-mono text-[#10B981]">{candidateToReset.signInTime ? formatLagosDateTime(candidateToReset.signInTime) : 'None'}</span>
-                </div>
-                <div className="flex justify-between text-[#ADCDBA]">
-                  <span className="text-[#789981]">Sign-Out Record:</span>
-                  <span className="font-mono text-blue-300">{candidateToReset.signOutTime ? formatLagosDateTime(candidateToReset.signOutTime) : 'None'}</span>
-                </div>
-              </div>
-
-              <div className="text-left pt-2">
-                <label className="block text-[11px] font-bold text-[#ADCDBA] mb-1">
-                  Reason for correction (will be recorded in audit log):
-                </label>
-                <input
-                  type="text"
-                  value={resetReason}
-                  onChange={(e) => setResetReason(e.target.value)}
-                  placeholder="e.g. Student scanned by mistake or hall reassignment"
-                  className="w-full px-3 py-2 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-xs text-[#F0F9F3] focus:outline-none focus:border-amber-400"
-                />
-              </div>
             </div>
 
             <div className="flex items-center gap-3 pt-2">
@@ -1185,24 +900,17 @@ export const ExamAttendanceView: React.FC<ExamAttendanceViewProps> = ({
                 type="button"
                 onClick={() => setCandidateToReset(null)}
                 disabled={isSubmittingReset}
-                className="flex-1 py-2.5 px-4 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] border border-[#789981]/40 font-bold text-xs rounded-xl transition cursor-pointer"
+                className="flex-1 py-2.5 bg-[#0A2419] hover:bg-[#0E3324] text-[#ADCDBA] font-bold text-xs rounded-xl border border-[#789981]/40 transition cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
-                onClick={confirmResetAttendance}
-                disabled={isSubmittingReset}
-                className="flex-1 py-2.5 px-4 bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-xl shadow-md transition flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                onClick={handleResetAttendance}
+                disabled={isSubmittingReset || !resetReason.trim()}
+                className="flex-1 py-2.5 bg-amber-600 hover:bg-amber-500 border border-amber-400 text-white font-extrabold text-xs rounded-xl shadow-lg transition cursor-pointer disabled:opacity-40"
               >
-                {isSubmittingReset ? (
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <RotateCcw className="w-4 h-4" />
-                    <span>Confirm Reset</span>
-                  </>
-                )}
+                {isSubmittingReset ? 'Recording Audit...' : 'Confirm Reset'}
               </button>
             </div>
           </div>

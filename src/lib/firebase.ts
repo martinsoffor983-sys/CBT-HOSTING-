@@ -3,15 +3,17 @@ import { getAuth } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
+const rawConfig = firebaseConfig as any;
+
 const effectiveFirebaseConfig = {
-  ...firebaseConfig,
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || firebaseConfig.apiKey,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || firebaseConfig.projectId,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
-  firestoreDatabaseId: import.meta.env.VITE_FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || firebaseConfig.appId,
+  ...rawConfig,
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || rawConfig.apiKey,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || rawConfig.projectId,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || rawConfig.authDomain,
+  firestoreDatabaseId: import.meta.env.VITE_FIRESTORE_DATABASE_ID || rawConfig.firestoreDatabaseId || 'ai-studio-suncbtsportsuniv-dac9c4d7-b341-4c21-a34f-58dd3f1416a0',
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || rawConfig.storageBucket,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || rawConfig.messagingSenderId,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || rawConfig.appId,
 };
 
 const app = initializeApp(effectiveFirebaseConfig);

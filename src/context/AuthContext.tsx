@@ -37,10 +37,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isAuthorized, setIsAuthorized] = useState(false);
 
   useEffect(() => {
-    // Immediate synchronous check for unauthorized cached session
+    // Immediate synchronous check for unauthorized cached session (exempt Google Calendar students)
     if (auth.currentUser) {
       const email = (auth.currentUser.email || '').toLowerCase().trim();
-      if (!isAuthorizedExaminerEmail(email)) {
+      const isGoogleUser = auth.currentUser.providerData?.some((p) => p.providerId === 'google.com');
+      if (!isAuthorizedExaminerEmail(email) && !isGoogleUser) {
         console.warn(`[Security Alert] Immediately evicting unauthorized cached session: ${email}`);
         signOut(auth).catch(() => {});
       }
@@ -56,12 +57,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       const userEmail = (currentUser.email || '').toLowerCase().trim();
 
-      // Strict email gate: Authorized administrator emails
+      // If user signed in via Google provider for Google Calendar in the student portal,
+      // allow student session without evicting or locking them out
+      const isGoogleCalendarUser = currentUser.providerData?.some((p) => p.providerId === 'google.com');
+
+      // Strict email gate: Authorized administrator emails for Lecturer portal
       if (!isAuthorizedExaminerEmail(userEmail)) {
-        console.warn(`[Security Alert] Unauthorized account detected: ${userEmail}. Revoking session immediately.`);
-        try {
-          await signOut(auth);
-        } catch {}
+        if (!isGoogleCalendarUser) {
+          console.warn(`[Security Alert] Unauthorized account detected: ${userEmail}. Revoking session immediately.`);
+          try {
+            await signOut(auth);
+          } catch {}
+        }
         setUser(null);
         setIsAuthorized(false);
         setLoading(false);

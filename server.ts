@@ -50,15 +50,16 @@ const inFlightSubmissionLocks = new Set<string>();
 const inFlightRegistrationLocks = new Set<string>();
 
 // Initialize Firebase for server-side operations (support env overrides while keeping default config)
+const rawServerConfig = firebaseConfig as any;
 const effectiveFirebaseConfig = {
-  ...firebaseConfig,
-  apiKey: process.env.FIREBASE_API_KEY || firebaseConfig.apiKey,
-  projectId: process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId,
-  authDomain: process.env.FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
-  firestoreDatabaseId: process.env.FIRESTORE_DATABASE_ID || firebaseConfig.firestoreDatabaseId,
-  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
-  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
-  appId: process.env.FIREBASE_APP_ID || firebaseConfig.appId
+  ...rawServerConfig,
+  apiKey: process.env.FIREBASE_API_KEY || rawServerConfig.apiKey,
+  projectId: process.env.FIREBASE_PROJECT_ID || rawServerConfig.projectId,
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN || rawServerConfig.authDomain,
+  firestoreDatabaseId: process.env.FIRESTORE_DATABASE_ID || rawServerConfig.firestoreDatabaseId || 'ai-studio-suncbtsportsuniv-dac9c4d7-b341-4c21-a34f-58dd3f1416a0',
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || rawServerConfig.storageBucket,
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || rawServerConfig.messagingSenderId,
+  appId: process.env.FIREBASE_APP_ID || rawServerConfig.appId
 };
 
 const fbApp = initializeApp(effectiveFirebaseConfig, 'server-app');
@@ -227,44 +228,52 @@ app.post('/api/exam/:examId/delete-results', async (req: Request, res: Response)
     }
     const examData = examSnap.data();
 
-    // 3. Identify all dependent result records belonging exclusively to this examination
-    const subsQuery = query(collection(db, 'submissions'), where('examId', '==', cleanId));
-    const subsSnap = await getDocs(subsQuery);
-
-    const sessionsQuery = query(collection(db, 'exam_sessions'), where('examId', '==', cleanId));
-    const sessionsSnap = await getDocs(sessionsQuery);
-
+    // 3. Identify and delete all dependent result records belonging exclusively to this examination
     let deletedSubmissionsCount = 0;
     let deletedSessionsCount = 0;
 
-    // 4. Safe Database Deletion: Batched writes for submissions
-    const subDocs = subsSnap.docs;
-    for (let i = 0; i < subDocs.length; i += 400) {
-      const chunk = subDocs.slice(i, i + 400);
-      const batch = writeBatch(db);
-      chunk.forEach((docSnap) => {
-        batch.delete(docSnap.ref);
-        deletedSubmissionsCount++;
-      });
-      await batch.commit();
+    try {
+      const subsQuery = query(collection(db, 'submissions'), where('examId', '==', cleanId));
+      const subsSnap = await getDocs(subsQuery);
+      const subDocs = subsSnap.docs;
+      for (let i = 0; i < subDocs.length; i += 400) {
+        const chunk = subDocs.slice(i, i + 400);
+        const batch = writeBatch(db);
+        chunk.forEach((docSnap) => {
+          batch.delete(docSnap.ref);
+          deletedSubmissionsCount++;
+        });
+        await batch.commit();
+      }
+    } catch (subsErr) {
+      console.warn('Notice during server submission deletion (may have been cleared by client):', subsErr);
     }
 
-    // 5. Safe Database Deletion: Batched writes for active/past exam sessions
-    const sessionDocs = sessionsSnap.docs;
-    for (let i = 0; i < sessionDocs.length; i += 400) {
-      const chunk = sessionDocs.slice(i, i + 400);
-      const batch = writeBatch(db);
-      chunk.forEach((docSnap) => {
-        batch.delete(docSnap.ref);
-        deletedSessionsCount++;
-      });
-      await batch.commit();
+    try {
+      const sessionsQuery = query(collection(db, 'exam_sessions'), where('examId', '==', cleanId));
+      const sessionsSnap = await getDocs(sessionsQuery);
+      const sessionDocs = sessionsSnap.docs;
+      for (let i = 0; i < sessionDocs.length; i += 400) {
+        const chunk = sessionDocs.slice(i, i + 400);
+        const batch = writeBatch(db);
+        chunk.forEach((docSnap) => {
+          batch.delete(docSnap.ref);
+          deletedSessionsCount++;
+        });
+        await batch.commit();
+      }
+    } catch (sesErr) {
+      console.warn('Notice during server session deletion (may have been cleared by client):', sesErr);
     }
 
     // 6. Update examination timestamp (preserving registered candidates roster, attendance records, questions, options, settings, and duration)
-    await updateDoc(examDocRef, {
-      updatedAt: new Date().toISOString()
-    });
+    try {
+      await updateDoc(examDocRef, {
+        updatedAt: new Date().toISOString()
+      });
+    } catch (upErr) {
+      console.warn('Notice updating exam updatedAt:', upErr);
+    }
 
     // 7. Evict in-memory timer tracking sessions for this exam
     timerManager.clearSessionsForExam(cleanId);
@@ -1517,6 +1526,41 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
       } catch (rosterErr) {
         console.warn('Could not update exam roster on start-exam:', rosterErr);
       }
+
+      // Record Online Examination Sign-In (Prevent duplicate records for same student & exam)
+      try {
+        const attDocId = `${cleanExamId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const attDocRef = doc(db, 'attendance_records', attDocId);
+        const existingAtt = await getDoc(attDocRef);
+
+        if (!existingAtt.exists()) {
+          await setDoc(attDocRef, {
+            examId: cleanExamId,
+            courseCode: examData.courseCode || '',
+            courseTitle: examData.courseTitle || '',
+            matricNumber: normalizedMatric,
+            fullName: normalizedFullName,
+            department: normalizedDept,
+            gender: sessionGender,
+            signInTime: startedAtIso,
+            signOutTime: null,
+            status: 'signed_in',
+            submissionStatus: 'in_progress',
+            createdAt: startedAtIso,
+            updatedAt: startedAtIso
+          });
+        } else {
+          const attData = existingAtt.data();
+          await updateDoc(attDocRef, {
+            status: attData.status === 'signed_out' ? 'signed_out' : 'signed_in',
+            signInTime: attData.signInTime || startedAtIso,
+            submissionStatus: attData.submissionStatus === 'submitted' ? 'submitted' : 'in_progress',
+            updatedAt: startedAtIso
+          });
+        }
+      } catch (attErr) {
+        console.warn('Could not record attendance on start-exam:', attErr);
+      }
     }
 
     // Register with Server-Side Timer Enforcement Manager (Official closing time priority enforced)
@@ -1974,7 +2018,45 @@ app.post('/api/submit-exam', async (req: Request, res: Response): Promise<void> 
       }
     }
 
-    // 7. Return response to student (WITHOUT SCORES OR CORRECT ANSWERS)
+    // 7. Automatic Sign-Out upon successful CBT examination submission
+    try {
+      const attDocId = `${examId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const attDocRef = doc(db, 'attendance_records', attDocId);
+      const attSnap = await getDoc(attDocRef);
+
+      if (attSnap.exists()) {
+        await updateDoc(attDocRef, {
+          status: 'signed_out',
+          signOutTime: submittedAt,
+          submissionStatus: 'submitted',
+          submittedAt,
+          submissionReceipt,
+          updatedAt: submittedAt
+        });
+      } else {
+        await setDoc(attDocRef, {
+          examId,
+          courseCode: examData.courseCode || '',
+          courseTitle: examData.courseTitle || '',
+          matricNumber: normalizedMatric,
+          fullName: cleanedFullName,
+          department: cleanedDepartment,
+          gender: resolvedGender,
+          signInTime: submittedAt, // fallback
+          signOutTime: submittedAt,
+          status: 'signed_out',
+          submissionStatus: 'submitted',
+          submittedAt,
+          submissionReceipt,
+          createdAt: submittedAt,
+          updatedAt: submittedAt
+        });
+      }
+    } catch (attErr) {
+      console.warn('Could not update automatic attendance sign-out:', attErr);
+    }
+
+    // 8. Return response to student (WITHOUT SCORES OR CORRECT ANSWERS)
     res.json({
       success: true,
       submissionReceipt,

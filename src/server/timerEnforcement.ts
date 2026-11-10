@@ -317,6 +317,48 @@ export class TimerEnforcementManager {
         console.warn('[Timer Enforcement] Could not update session doc:', err);
       }
 
+      // 5. Automatically update attendance status to signed_out upon successful submission
+      try {
+        const attDocId = `${session.examId}_${session.matricNumber.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        const attDocRef = doc(this.db, 'attendance_records', attDocId);
+        const attSnap = await getDoc(attDocRef);
+
+        if (attSnap.exists()) {
+          await updateDoc(attDocRef, {
+            status: 'signed_out',
+            signOutTime: submittedAt,
+            submissionStatus: 'submitted',
+            submittedAt,
+            submissionReceipt,
+            updatedAt: submittedAt
+          });
+        } else {
+          await setDoc(attDocRef, {
+            examId: session.examId,
+            courseCode: examData.courseCode || session.courseCode || '',
+            courseTitle: examData.courseTitle || session.courseTitle || '',
+            matricNumber: session.matricNumber,
+            fullName: session.fullName,
+            department: session.department,
+            gender: (session.gender === 'M' || String(session.gender).trim().toUpperCase() === 'M' || String(session.gender).trim().toUpperCase() === 'MALE')
+              ? 'M'
+              : (session.gender === 'F' || String(session.gender).trim().toUpperCase() === 'F' || String(session.gender).trim().toUpperCase() === 'FEMALE')
+              ? 'F'
+              : 'Not recorded',
+            signInTime: session.startedAt || submittedAt,
+            signOutTime: submittedAt,
+            status: 'signed_out',
+            submissionStatus: 'submitted',
+            submittedAt,
+            submissionReceipt,
+            createdAt: session.startedAt || submittedAt,
+            updatedAt: submittedAt
+          });
+        }
+      } catch (attErr) {
+        console.warn('[Timer Enforcement] Could not update attendance to signed_out:', attErr);
+      }
+
       console.log(
         `[Timer Enforcement] AUTO-SUBMIT COMPLETED for ${session.matricNumber}. Score: ${score}/${totalQuestions} (${percentage}%). Receipt: ${submissionReceipt}`
       );

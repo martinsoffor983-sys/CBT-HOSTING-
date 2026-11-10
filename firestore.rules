@@ -73,13 +73,14 @@ service cloud.firestore {
       allow list: if isAuthorizedLecturer();
       // Creation permitted for verified submission shapes; immutable once created
       allow create: if isValidId(submissionId) && isValidSubmission(incoming());
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isValidId(submissionId) && isAuthorizedLecturer();
     }
 
     // Exam sessions: Used to lock student sessions, enforce timers, and prevent duplicate submissions
     match /exam_sessions/{sessionId} {
       allow get: if isValidId(sessionId);
-      allow list: if false;
+      allow list: if isAuthorizedLecturer();
       allow create: if isValidId(sessionId)
         && incoming().keys().hasAll(['examId', 'matricNumber', 'startedAt', 'durationMinutes', 'status'])
         && incoming().examId is string && incoming().examId.size() <= 128
@@ -87,14 +88,18 @@ service cloud.firestore {
       allow update: if isValidId(sessionId)
         && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'answers', 'lastSavedAt', 'expiresAt', 'autoSubmittedAt', 'autoSubmitReason', 'batch'])
         && incoming().status in ['in_progress', 'submitted'];
-      allow delete: if false;
+      allow delete: if isValidId(sessionId) && isAuthorizedLecturer();
     }
 
-    // Attendance records: Physical student examination attendance tracking
+    // Attendance records: Online student CBT examination attendance tracking
     match /attendance_records/{attendanceId} {
-      allow get, list: if isAuthorizedLecturer();
-      allow create, update: if isAuthorizedLecturer() && isValidId(attendanceId);
-      allow delete: if false; // Physical attendance records are permanent and tamper-evident
+      allow get: if isValidId(attendanceId);
+      allow list: if isAuthorizedLecturer();
+      allow create, update: if isValidId(attendanceId)
+        && incoming().keys().hasAll(['examId', 'matricNumber', 'fullName', 'status'])
+        && incoming().examId is string && incoming().examId.size() <= 128
+        && incoming().matricNumber is string && incoming().matricNumber.size() <= 64;
+      allow delete: if false; // Attendance records are permanent and tamper-evident
     }
 
     // Audit logs collection: Immutable administrative security logs
