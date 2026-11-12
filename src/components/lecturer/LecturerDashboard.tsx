@@ -442,7 +442,7 @@ export const LecturerDashboard: React.FC = () => {
       </div>
 
       {/* Google Calendar Examination Schedule Synchronization */}
-      <div className="mb-6">
+      <div className="mb-4">
         <GoogleCalendarSync exams={exams} />
       </div>
 
@@ -539,14 +539,14 @@ export const LecturerDashboard: React.FC = () => {
           filteredExams.map((exam) => (
             <div
               key={exam.id}
-              className={`bg-[#061C13] rounded-2xl shadow-xl border p-5 sm:p-6 transition space-y-4 ${
+              className={`bg-[#061C13] rounded-2xl shadow-xl border p-3.5 sm:p-4 transition space-y-2.5 ${
                 exam.status === 'draft'
                   ? 'border-amber-400/30 hover:border-amber-400/60'
                   : 'border-[#789981]/30 hover:border-[#D6BF62]/50'
               }`}
             >
-              <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
-                <div className="space-y-1.5 flex-1 min-w-0">
+              <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3">
+                <div className="space-y-2.5 flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="px-2.5 py-0.5 rounded-md text-xs font-black bg-[#0A2419] border border-[#D6BF62]/40 text-[#D6BF62]">
                       {exam.courseCode}
@@ -562,9 +562,6 @@ export const LecturerDashboard: React.FC = () => {
                     >
                       {exam.status === 'draft' ? 'Draft' : exam.status}
                     </span>
-                    <span className="text-xs text-[#ADCDBA] font-medium truncate">
-                      Dept: <span className="text-[#F0F9F3] font-semibold">{exam.department}</span>
-                    </span>
                     {exam.randomizationEnabled && (
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#0A2419] border border-[#D6BF62]/30 text-[#D6BF62] flex items-center gap-1">
                         <Shuffle className="w-3 h-3 text-[#D6BF62]" />
@@ -573,29 +570,64 @@ export const LecturerDashboard: React.FC = () => {
                     )}
                   </div>
 
-                  <h3 className="text-base sm:text-lg font-bold text-[#F0F9F3] truncate">
-                    {exam.courseTitle}
-                  </h3>
+                  {/* Targeted Examination Details Front-Page Display */}
+                  <div className="bg-[#030515]/70 rounded-xl p-3 sm:p-3.5 border border-[#789981]/30 space-y-2 shadow-inner">
+                    <div className="pb-1.5 border-b border-[#789981]/20">
+                      <span className="text-xs text-[#ADCDBA] font-medium mr-1.5">Course Title:</span>
+                      <span className="font-extrabold text-[#F0F9F3] text-sm sm:text-base tracking-tight inline-block">{exam.courseTitle}</span>
+                    </div>
 
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-[#ADCDBA] pt-1">
-                    <span className="flex items-center gap-1 font-medium">
-                      <User className="w-3.5 h-3.5 text-[#D6BF62]" />
-                      Lecturer: <span className="text-[#F0F9F3] font-semibold">{exam.lecturerName || 'Not specified'}</span>
-                    </span>
-                    <span className="flex items-center gap-1 font-medium">
-                      <Clock className="w-3.5 h-3.5 text-[#D6BF62]" />
-                      {exam.durationMinutes} Minutes
-                    </span>
-                    <span className="flex items-center gap-1 font-medium">
-                      <Layers className="w-3.5 h-3.5 text-[#D6BF62]" />
-                      {exam.questionsCount || 0} Questions
-                    </span>
-                    {exam.startDate && (
-                      <span className="flex items-center gap-1 font-medium text-[11px]">
-                        <Calendar className="w-3.5 h-3.5 text-[#D6BF62]" />
-                        Date: <span className="text-[#F0F9F3]">{formatLagosDate(exam.startDate)}</span> • Window: <span className="text-[#ADCDBA]">{formatLagosTime(exam.startDate)} – {formatLagosTime(exam.endDate)} (WAT)</span>
-                      </span>
-                    )}
+                    <div className="grid grid-cols-2 gap-x-4 sm:gap-x-6 gap-y-1.5 text-xs text-[#ADCDBA]">
+                      <div>
+                        <span className="text-[#ADCDBA]">Course Code: </span>
+                        <span className="font-bold text-[#D6BF62] font-mono">{exam.courseCode}</span>
+                      </div>
+
+                      <div>
+                        <span className="text-[#ADCDBA]">Level: </span>
+                        <span className="font-bold text-[#F0F9F3]">{exam.level || '100 LEVEL'}</span>
+                      </div>
+
+                      <div>
+                        <span className="text-[#ADCDBA]">Department: </span>
+                        <span className="font-medium text-[#F0F9F3]">{exam.department}</span>
+                      </div>
+
+                      <div>
+                        <span className="text-[#ADCDBA]">Lecturer: </span>
+                        <span className="font-medium text-[#F0F9F3]">{exam.lecturerName || 'Not specified'}</span>
+                      </div>
+
+                      <div>
+                        <span className="text-[#ADCDBA]">Questions: </span>
+                        <span className="font-semibold text-[#F0F9F3]">
+                          {exam.questionsCount || (Array.isArray(exam.questions) ? exam.questions.length : 0)}
+                        </span>
+                      </div>
+
+                      <div>
+                        <span className="text-[#ADCDBA]">Date: </span>
+                        <span className="font-medium text-[#F0F9F3]">
+                          {exam.startDate ? formatLagosDate(exam.startDate) : 'Not scheduled'}
+                        </span>
+                      </div>
+
+                      <div>
+                        <span className="text-[#ADCDBA]">Exam Window: </span>
+                        <span className="font-medium text-[#F0F9F3]">
+                          {exam.startDate && exam.endDate
+                            ? `${formatLagosTime(exam.startDate)} – ${formatLagosTime(exam.endDate)}`
+                            : 'N/A'}
+                        </span>
+                      </div>
+
+                      <div>
+                        <span className="text-[#ADCDBA]">Exam Timer: </span>
+                        <span className="font-bold text-[#10B981]">
+                          {exam.durationMinutes ? `${exam.durationMinutes} minutes` : '5 minutes'}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -888,6 +920,14 @@ export const LecturerDashboard: React.FC = () => {
                 <div>
                   <span className="text-[#789981] uppercase font-bold text-[10px] block">Current Status</span>
                   <span className="font-bold uppercase text-[#10B981]">{detailsExam.status}</span>
+                </div>
+                <div>
+                  <span className="text-[#789981] uppercase font-bold text-[10px] block">Level</span>
+                  <span className="font-semibold text-[#F0F9F3]">{detailsExam.level || '100 LEVEL'}</span>
+                </div>
+                <div>
+                  <span className="text-[#789981] uppercase font-bold text-[10px] block">Lecturer</span>
+                  <span className="font-semibold text-[#F0F9F3]">{detailsExam.lecturerName || 'Not specified'}</span>
                 </div>
                 <div>
                   <span className="text-[#789981] uppercase font-bold text-[10px] block">Department Eligibility</span>

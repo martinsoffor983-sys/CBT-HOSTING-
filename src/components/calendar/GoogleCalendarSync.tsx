@@ -200,193 +200,84 @@ export const GoogleCalendarSync: React.FC<GoogleCalendarSyncProps> = ({
   };
 
   return (
-    <div className="bg-[#061C13] border border-[#D6BF62]/30 rounded-2xl p-4 sm:p-5 text-left space-y-4 shadow-xl">
-      {/* Header Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#0E623B]/30 border border-[#D6BF62]/40 flex items-center justify-center text-[#D6BF62] shrink-0">
-            <CalendarIcon className="w-5 h-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-black text-[#F0F9F3] tracking-wide">
+    <div className="bg-[#061C13] border border-[#D6BF62]/30 rounded-xl p-3 sm:px-4 sm:py-2.5 text-left shadow-md">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+        <div className="space-y-0.5 min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="text-xs sm:text-sm font-black text-[#F0F9F3] tracking-wide">
               Examination Reminders
             </h3>
-            <p className="text-xs text-[#ADCDBA] mt-0.5">
-              Automatically receive your examination schedules and reminders.
-            </p>
+            {isConnected && (
+              <span className="px-2 py-0.5 bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 font-bold rounded-md text-[10px] flex items-center gap-1">
+                <CheckCircle className="w-3 h-3 text-emerald-400" />
+                Connected
+              </span>
+            )}
           </div>
+          <p className="text-[11px] sm:text-xs text-[#ADCDBA] leading-tight">
+            Receive your examination schedules and reminders in your Google Calendar.
+          </p>
         </div>
 
-        {/* Toggle Details / View Timetable */}
-        <button
-          type="button"
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="text-xs text-[#D6BF62] hover:text-[#f3df88] flex items-center gap-1 font-semibold self-start sm:self-auto cursor-pointer"
-        >
-          <span>{isExpanded ? 'Hide Details' : 'View Timetable'}</span>
-          {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-        </button>
-      </div>
-
-      {/* Notifications */}
-      {errorMessage && (
-        <div className="p-3 bg-[#2A0808] border border-red-500/40 rounded-xl text-red-200 text-xs flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-          <span>{errorMessage}</span>
-        </div>
-      )}
-
-      {successMessage && (
-        <div className="p-3 bg-[#0E3324] border border-[#D6BF62]/50 rounded-xl text-[#F0F9F3] text-xs flex items-center gap-2">
-          <CheckCircle className="w-4 h-4 text-[#D6BF62] shrink-0" />
-          <span>{successMessage}</span>
-        </div>
-      )}
-
-      {/* Connection & Action Section */}
-      <div className="pt-3 border-t border-[#789981]/20 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        {!isConnected ? (
-          <div className="w-full sm:w-auto">
+        <div className="shrink-0 flex items-center gap-2">
+          {!isConnected ? (
             <button
               type="button"
               onClick={handleConnect}
               disabled={isConnecting}
-              className="px-5 py-2.5 bg-[#0E623B] hover:bg-[#127949] text-[#F0F9F3] border border-[#D6BF62]/80 text-xs font-bold rounded-xl transition shadow-md disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
+              className="px-3.5 py-1.5 bg-[#0E623B] hover:bg-[#127949] text-[#F0F9F3] border border-[#D6BF62] text-xs font-bold rounded-lg transition shadow-sm disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1.5 active:scale-95"
             >
               {isConnecting ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin text-[#D6BF62]" />
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D6BF62]" />
                   <span>Connecting...</span>
                 </>
               ) : (
                 <span>Connect</span>
               )}
             </button>
-            <p className="text-[11px] text-[#ADCDBA] mt-2 leading-relaxed">
-              Connect once to receive automatic examination reminders five minutes before each examination.
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-col sm:flex-row sm:items-center gap-3 w-full justify-between">
-            <div className="flex items-center gap-3">
-              <span className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-              <div className="text-xs">
-                <div className="flex items-center gap-2">
-                  <span className="px-2.5 py-1 bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 font-black rounded-lg text-xs flex items-center gap-1.5">
-                    <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
-                    Connected
-                  </span>
-                  <span className="text-[#D6BF62] font-mono text-[11px] font-bold">({connectedEmail})</span>
-                </div>
-                <div className="flex items-center gap-2 mt-1.5 text-[11px] text-[#ADCDBA]">
-                  <span>5-Minute Reminders Active</span>
-                  <span>•</span>
-                  <span>
-                    Last Synced: <strong className="text-[#F0F9F3]">{lastSyncTime || 'Just now'}</strong>
-                  </span>
-                </div>
-              </div>
-            </div>
-
+          ) : (
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={handleSyncAll}
                 disabled={isSyncing || eligibleExams.length === 0}
-                className="px-3.5 py-1.5 bg-[#0A2419] hover:bg-[#0E3324] border border-[#789981]/40 text-[#ADCDBA] hover:text-[#F0F9F3] text-xs font-semibold rounded-xl transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+                className="px-2.5 py-1 bg-[#0A2419] hover:bg-[#0E3324] border border-[#789981]/40 text-[#ADCDBA] hover:text-[#F0F9F3] text-[11px] font-semibold rounded-lg transition flex items-center gap-1 disabled:opacity-50 cursor-pointer"
                 title="Synchronize examination timetable"
               >
                 {isSyncing ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D6BF62]" />
-                    <span>Syncing...</span>
-                  </>
+                  <Loader2 className="w-3 h-3 animate-spin text-[#D6BF62]" />
                 ) : (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 text-[#D6BF62]" />
-                    <span>Sync Now</span>
-                  </>
+                  <RefreshCw className="w-3 h-3 text-[#D6BF62]" />
                 )}
+                <span>{isSyncing ? 'Syncing...' : 'Sync'}</span>
               </button>
 
               <button
                 type="button"
                 onClick={handleDisconnect}
                 title="Disconnect Examination Reminders"
-                className="text-xs text-[#789981] hover:text-red-300 transition cursor-pointer px-2 py-1 rounded-lg hover:bg-[#160a0a]"
+                className="text-[11px] text-[#789981] hover:text-red-300 transition cursor-pointer px-2 py-1 rounded-md hover:bg-[#160a0a]"
               >
                 Disconnect
               </button>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
-      {/* Expandable Timetable Review */}
-      {isExpanded && (
-        <div className="pt-3 border-t border-[#789981]/20 space-y-2">
-          <p className="text-xs font-bold text-[#ADCDBA] uppercase tracking-wider">
-            Examinations Available For Calendar Sync ({eligibleExams.length})
-          </p>
-          {eligibleExams.length === 0 ? (
-            <p className="text-xs text-[#789981] italic py-2">
-              No upcoming scheduled examinations found for the selected department.
-            </p>
-          ) : (
-            <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
-              {eligibleExams.map((ex) => {
-                const result = syncResults?.find((r) => r.examId === ex.id);
-                return (
-                  <div
-                    key={ex.id}
-                    className="p-2.5 rounded-xl bg-[#0A2419] border border-[#789981]/30 flex items-center justify-between gap-3 text-xs"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-bold text-[#D6BF62]">{ex.courseCode}</span>
-                        <span className="text-[#F0F9F3] font-medium line-clamp-1">{ex.courseTitle}</span>
-                      </div>
-                      <p className="text-[10px] text-[#ADCDBA] mt-0.5">
-                        {formatLagosDate(ex.startDate)} • {formatLagosTime(ex.startDate)} – {formatLagosTime(ex.endDate)} ({ex.durationMinutes} mins)
-                      </p>
-                    </div>
+      {/* Notifications */}
+      {errorMessage && (
+        <div className="mt-2 px-2.5 py-1 bg-[#2A0808] border border-red-500/40 rounded-lg text-red-200 text-[10px] sm:text-[11px] flex items-center gap-1.5">
+          <AlertCircle className="w-3 h-3 text-red-400 shrink-0" />
+          <span>{errorMessage}</span>
+        </div>
+      )}
 
-                    <div className="flex items-center gap-2 shrink-0">
-                      {result?.status === 'created' || result?.status === 'updated' ? (
-                        <span className="flex items-center gap-1 text-[11px] text-emerald-400 font-bold bg-emerald-950/60 px-2 py-0.5 rounded-lg border border-emerald-500/30">
-                          <CheckCircle className="w-3 h-3" />
-                          <span>Synced</span>
-                        </span>
-                      ) : null}
-
-                      {result?.htmlLink && (
-                        <a
-                          href={result.htmlLink}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="p-1.5 text-[#D6BF62] hover:text-[#fff] bg-[#030515] rounded-lg border border-[#789981]/30 transition"
-                          title="Open in Google Calendar"
-                        >
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </a>
-                      )}
-
-                      {isConnected && (
-                        <button
-                          type="button"
-                          onClick={() => handleSyncSingle(ex)}
-                          disabled={isSyncing}
-                          className="px-2.5 py-1 bg-[#0E623B] hover:bg-[#127949] text-[#F0F9F3] font-bold text-[11px] rounded-lg transition disabled:opacity-50 cursor-pointer border border-[#D6BF62]/40"
-                        >
-                          {result?.status === 'created' || result?.status === 'updated' ? 'Re-sync' : 'Add to Calendar'}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+      {successMessage && (
+        <div className="mt-2 px-2.5 py-1 bg-[#0E3324] border border-[#D6BF62]/50 rounded-lg text-[#F0F9F3] text-[10px] sm:text-[11px] flex items-center gap-1.5">
+          <CheckCircle className="w-3 h-3 text-[#D6BF62] shrink-0" />
+          <span>{successMessage}</span>
         </div>
       )}
     </div>

@@ -23,6 +23,7 @@ export interface Exam {
   lecturerName?: string;
   courseCode: string;
   courseTitle: string;
+  level?: string;
   department: string;
   durationMinutes: number;
   startDate: string;
@@ -43,6 +44,7 @@ export interface PublicExam {
   id: string;
   courseCode: string;
   courseTitle: string;
+  level?: string;
   department: string;
   lecturerName?: string;
   durationMinutes: number;
@@ -150,3 +152,14 @@ export const SUN_DEPARTMENTS = [
   'Nutritional Science & Dietetics',
   'Sports Medicine & Rehabilitation'
 ] as const;
+
+export const SUN_LEVELS = [
+  '100 LEVEL',
+  '200 LEVEL',
+  '300 LEVEL',
+  '400 LEVEL',
+  '500 LEVEL',
+  '600 LEVEL'
+] as const;
+
+export type SunLevel = (typeof SUN_LEVELS)[number];

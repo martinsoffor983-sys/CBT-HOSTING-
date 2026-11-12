@@ -1093,13 +1093,53 @@ app.post('/api/verify-candidate', async (req: Request, res: Response): Promise<v
       return;
     }
 
-    // Duplicate Check: Check if session exists and is already submitted for this exam
+    // Single Attempt & Existing Session Recovery Check
     const sessionId = `ses_${cleanExamId}_${normalizedMatric.replace(/[^a-zA-Z0-9]/g, '_')}`;
     const sessionSnap = await getDoc(doc(db, 'exam_sessions', sessionId));
-    if (sessionSnap.exists() && sessionSnap.data()?.status === 'submitted') {
-      res.status(400).json({
-        error: `Duplicate Registration Error: Candidate with Matriculation Number ${normalizedMatric} has already submitted this examination. Reopening or retaking this examination is strictly prohibited.`,
-        alreadySubmitted: true
+    if (sessionSnap.exists()) {
+      const sData = sessionSnap.data();
+      if (sData?.status === 'submitted') {
+        res.status(400).json({
+          error: `Duplicate Registration Error: Candidate with Matriculation Number ${normalizedMatric} has already submitted this examination. Reopening or retaking this examination is strictly prohibited.`,
+          alreadySubmitted: true
+        });
+        return;
+      }
+
+      // Check if 40-minute recovery window has expired
+      const now = Date.now();
+      const firstStartMs = sData.firstStartedAtMs || new Date(sData.firstStartedAt || sData.startedAt).getTime();
+      const maxRecoveryExpiresAt = sData.maxRecoveryExpiresAt || (firstStartMs + 40 * 60 * 1000);
+
+      if (now >= maxRecoveryExpiresAt || (access.closeTimeMs && now >= access.closeTimeMs)) {
+        res.status(400).json({
+          error: 'The 40-minute access and recovery window for this examination has expired. Your attempt has been concluded.',
+          isClosed: true
+        });
+        return;
+      }
+
+      const recoverySecondsLeft = Math.max(0, Math.floor((maxRecoveryExpiresAt - now) / 1000));
+      const remainingSeconds = Math.min(
+        typeof sData.remainingSeconds === 'number' ? sData.remainingSeconds : (sData.durationMinutes || 5) * 60,
+        recoverySecondsLeft
+      );
+
+      // Active ongoing attempt found - inform student UI to Continue Examination
+      res.json({
+        eligible: true,
+        matricNumber: normalizedMatric,
+        examId: cleanExamId,
+        hasExistingSession: true,
+        isResumable: true,
+        sessionId,
+        remainingSeconds,
+        savedAnswersCount: Object.keys(sData.answers || {}).length,
+        firstStartedAt: sData.firstStartedAt || sData.startedAt,
+        maxRecoveryExpiresAt,
+        recoveryMinutesLeft: Math.ceil(recoverySecondsLeft / 60),
+        actionType: 'continue',
+        buttonLabel: 'Continue Examination'
       });
       return;
     }
@@ -1107,7 +1147,11 @@ app.post('/api/verify-candidate', async (req: Request, res: Response): Promise<v
     res.json({
       eligible: true,
       matricNumber: normalizedMatric,
-      examId: cleanExamId
+      examId: cleanExamId,
+      hasExistingSession: false,
+      isResumable: false,
+      actionType: 'start',
+      buttonLabel: 'Continue to Instructions'
     });
   } catch (err: any) {
     console.error('Candidate verify error:', err);
@@ -1243,6 +1287,7 @@ app.get('/api/exams-public', async (_req: Request, res: Response): Promise<void>
         id: docSnap.id,
         courseCode: data.courseCode,
         courseTitle: data.courseTitle,
+        level: data.level || '100 LEVEL',
         department: data.department,
         lecturerName: data.lecturerName || 'Not specified',
         durationMinutes: data.durationMinutes,
@@ -1316,6 +1361,7 @@ app.get('/api/exam-public/:examId', async (req: Request, res: Response): Promise
       id: examDoc.id,
       courseCode: data.courseCode || 'N/A',
       courseTitle: data.courseTitle || 'Examination',
+      level: data.level || '100 LEVEL',
       department: data.department || 'All Departments',
       lecturerName: data.lecturerName || 'Not specified',
       durationMinutes: Number(data.durationMinutes) || 30,
@@ -1417,30 +1463,34 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    const durationMinutes = Number(examData.durationMinutes) || 30;
-    const individualAllowedSeconds = durationMinutes * 60;
+    const durationMinutes = Number(examData.durationMinutes) || 5;
+    const totalDurationSeconds = durationMinutes * 60;
     let startedAtIso: string;
+    let firstStartedAtMs: number;
+    let maxRecoveryExpiresAt: number;
     let remainingSeconds: number;
     let assignedBatch = 'Batch A';
     let sessionGender = resolvedGender;
+    let isResumed = false;
 
     const batchList = ['Batch A', 'Batch B', 'Batch C', 'Batch D'];
 
     if (sessionSnap.exists()) {
+      // Existing Attempt: Resume attempt (Strictly Single Attempt per Student)
       const sessionData = sessionSnap.data();
-      startedAtIso = sessionData.startedAt;
+      startedAtIso = sessionData.firstStartedAt || sessionData.startedAt;
+      firstStartedAtMs = sessionData.firstStartedAtMs || new Date(startedAtIso).getTime();
       assignedBatch = sessionData.batch || 'Batch A';
       sessionGender = sessionData.gender || resolvedGender;
-      const startedAtMs = new Date(startedAtIso).getTime();
+      isResumed = true;
 
-      // Rule 3: The official closing time must strictly take priority over the individual timer
-      const individualExpiresAt = startedAtMs + individualAllowedSeconds * 1000;
-      const effectiveExpiresAt = closeTimeMs ? Math.min(individualExpiresAt, closeTimeMs) : individualExpiresAt;
-      remainingSeconds = Math.max(0, Math.floor((effectiveExpiresAt - now) / 1000));
+      const defaultRecoveryExpiresAt = firstStartedAtMs + 40 * 60 * 1000;
+      maxRecoveryExpiresAt =
+        sessionData.maxRecoveryExpiresAt ||
+        (closeTimeMs ? Math.min(defaultRecoveryExpiresAt, closeTimeMs) : defaultRecoveryExpiresAt);
 
-      // Rule 5: If student returns after closing time, do not allow them to reopen
-      if (remainingSeconds <= 0) {
-        // Trigger auto-submit of any existing answers if not already done
+      // Rule 5: 40-minute maximum recovery window measured from first examination start (does not reset)
+      if (now >= maxRecoveryExpiresAt || (closeTimeMs && now >= closeTimeMs)) {
         const tracker = timerManager.registerSession({
           sessionId,
           examId: cleanExamId,
@@ -1448,8 +1498,10 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
           fullName: normalizedFullName,
           department: normalizedDept,
           gender: sessionGender,
-          startedAtIso,
+          firstStartedAtIso: startedAtIso,
           durationMinutes,
+          remainingSeconds: 0,
+          maxRecoveryExpiresAt,
           closingTimeIso: examData.endDate || null,
           closingTimeMs: closeTimeMs,
           courseCode: examData.courseCode,
@@ -1460,19 +1512,48 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
         await timerManager.executeAutoSubmission(tracker);
 
         res.status(400).json({
+          error: 'The 40-minute access and recovery window for this examination has expired. Your attempt has been concluded.',
+          isClosed: true
+        });
+        return;
+      }
+
+      // Restore preserved remaining answering time, capped by remaining seconds in the 40-minute recovery window
+      const recoveryRemainingSec = Math.max(0, Math.floor((maxRecoveryExpiresAt - now) / 1000));
+      const preservedSeconds =
+        typeof sessionData.remainingSeconds === 'number'
+          ? sessionData.remainingSeconds
+          : totalDurationSeconds;
+      remainingSeconds = Math.max(0, Math.min(preservedSeconds, recoveryRemainingSec));
+
+      if (remainingSeconds <= 0) {
+        res.status(400).json({
           error: 'This examination has ended. Access is no longer available.',
           isClosed: true
         });
         return;
       }
+
+      // Unpause and update session document in Firestore
+      try {
+        await updateDoc(sessionDocRef, {
+          status: 'in_progress',
+          isPaused: false,
+          lastResumedAt: new Date().toISOString(),
+          lastActiveAtMs: now
+        });
+      } catch (err) {
+        console.warn('Could not update session resume state in Firestore:', err);
+      }
     } else {
       startedAtIso = new Date().toISOString();
-      const startedAtMs = new Date(startedAtIso).getTime();
-
-      // Rule 3: A student who starts shortly before closing time must not continue beyond the official closing time
-      const individualExpiresAt = startedAtMs + individualAllowedSeconds * 1000;
-      const effectiveExpiresAt = closeTimeMs ? Math.min(individualExpiresAt, closeTimeMs) : individualExpiresAt;
-      remainingSeconds = Math.max(0, Math.floor((effectiveExpiresAt - now) / 1000));
+      firstStartedAtMs = now;
+      const defaultRecoveryExpiresAt = firstStartedAtMs + 40 * 60 * 1000;
+      maxRecoveryExpiresAt = closeTimeMs
+        ? Math.min(defaultRecoveryExpiresAt, closeTimeMs)
+        : defaultRecoveryExpiresAt;
+      const recoveryRemainingSec = Math.max(0, Math.floor((maxRecoveryExpiresAt - now) / 1000));
+      remainingSeconds = Math.max(0, Math.min(totalDurationSeconds, recoveryRemainingSec));
 
       if (remainingSeconds <= 0) {
         res.status(400).json({
@@ -1497,12 +1578,19 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
         fullName: normalizedFullName,
         department: normalizedDept,
         gender: sessionGender,
+        firstStartedAt: startedAtIso,
+        firstStartedAtMs,
         startedAt: startedAtIso,
         durationMinutes,
+        totalDurationSeconds,
+        remainingSeconds,
+        maxRecoveryExpiresAt,
         closingTimeIso: examData.endDate || null,
-        expiresAt: effectiveExpiresAt,
         status: 'in_progress',
-        batch: assignedBatch
+        isPaused: false,
+        batch: assignedBatch,
+        attemptNumber: 1,
+        answers: {}
       });
 
       // Maintain candidate roster on exam record
@@ -1563,7 +1651,7 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
       }
     }
 
-    // Register with Server-Side Timer Enforcement Manager (Official closing time priority enforced)
+    // Register with Server-Side Timer Enforcement Manager (40-minute recovery limit enforced)
     timerManager.registerSession({
       sessionId,
       examId: cleanExamId,
@@ -1571,13 +1659,16 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
       fullName: normalizedFullName,
       department: normalizedDept,
       gender: sessionGender,
-      startedAtIso,
+      firstStartedAtIso: startedAtIso,
       durationMinutes,
+      remainingSeconds,
+      maxRecoveryExpiresAt,
       closingTimeIso: examData.endDate || null,
       closingTimeMs: closeTimeMs,
       courseCode: examData.courseCode,
       courseTitle: examData.courseTitle,
       batch: assignedBatch,
+      isPaused: false,
       existingAnswers: sessionSnap.exists() ? sessionSnap.data()?.answers : {}
     });
 
@@ -1609,14 +1700,19 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
     }));
 
     const isClosingTimeCapped = Boolean(
-      closeTimeMs && closeTimeMs < new Date(startedAtIso).getTime() + individualAllowedSeconds * 1000
+      closeTimeMs && closeTimeMs < firstStartedAtMs + durationMinutes * 60 * 1000
     );
 
     res.json({
       sessionId,
       startedAt: startedAtIso,
+      firstStartedAt: startedAtIso,
       durationMinutes,
       remainingSeconds,
+      isResumed,
+      action: isResumed ? 'continue' : 'start',
+      attemptNumber: 1,
+      maxRecoveryExpiresAt,
       isClosingTimeCapped,
       closingTimeIso: examData.endDate || null,
       batch: assignedBatch,
@@ -1627,6 +1723,7 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
         id: examDoc.id,
         courseCode: examData.courseCode,
         courseTitle: examData.courseTitle,
+        level: examData.level || '100 LEVEL',
         department: examData.department,
         lecturerName: examData.lecturerName || 'Not specified',
         durationMinutes,
@@ -1652,17 +1749,17 @@ app.post('/api/start-exam', async (req: Request, res: Response): Promise<void> =
 // 4. Real-time Answers Progress Save & Server Timer Check
 app.post('/api/save-progress', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { sessionId, examId, matricNumber, answers = {} } = req.body;
+    const { sessionId, examId, matricNumber, answers = {}, remainingSeconds: clientRemainingSeconds } = req.body;
 
     if (!sessionId) {
       res.status(400).json({ error: 'Missing session ID.' });
       return;
     }
 
-    // Update in-memory tracker
-    timerManager.updateAnswers(sessionId, answers);
+    // Update in-memory tracker with answers and client remaining time
+    timerManager.updateAnswers(sessionId, answers, clientRemainingSeconds);
 
-    // Check timer status authoritatively on the server (considering closing time)
+    // Check timer status authoritatively on the server (considering 40-minute recovery window)
     let timeStatus = timerManager.getRemainingTime(sessionId);
 
     // If tracker not in memory (e.g. server restart), restore from Firestore
@@ -1683,16 +1780,22 @@ app.post('/api/save-progress', async (req: Request, res: Response): Promise<void
           fullName: data.fullName,
           department: data.department,
           gender: data.gender || 'Not recorded',
-          startedAtIso: data.startedAt,
-          durationMinutes: data.durationMinutes,
+          firstStartedAtIso: data.firstStartedAt || data.startedAt,
+          durationMinutes: data.durationMinutes || 5,
+          remainingSeconds:
+            typeof data.remainingSeconds === 'number'
+              ? data.remainingSeconds
+              : (data.durationMinutes || 5) * 60,
+          maxRecoveryExpiresAt: data.maxRecoveryExpiresAt,
           closingTimeIso,
+          isPaused: Boolean(data.isPaused),
           existingAnswers: answers
         });
         timeStatus = timerManager.getRemainingTime(sessionId);
       }
     }
 
-    // Rule 4: If a student is still writing when official closing time arrives, automatically submit saved answers
+    // If expired (either 5-minute answering duration or 40-minute recovery window or closing time)
     if (timeStatus.isExpired) {
       const tracker = timerManager.getSession(sessionId);
       if (tracker && tracker.status !== 'submitted') {
@@ -1726,10 +1829,11 @@ app.post('/api/save-progress', async (req: Request, res: Response): Promise<void
       return;
     }
 
-    // Persist answers to Firestore session document regularly
+    // Persist answers and remaining time to Firestore session document regularly
     try {
       await updateDoc(doc(db, 'exam_sessions', sessionId), {
         answers,
+        remainingSeconds: timeStatus.remainingSeconds,
         lastSavedAt: new Date().toISOString()
       });
     } catch (saveErr) {
@@ -1740,12 +1844,51 @@ app.post('/api/save-progress', async (req: Request, res: Response): Promise<void
       success: true,
       isExpired: false,
       remainingSeconds: timeStatus.remainingSeconds,
+      recoverySecondsLeft: timeStatus.recoverySecondsLeft,
+      isPaused: timeStatus.isPaused,
       serverTime: timeStatus.serverTime,
       isClosingTimeEnforced: timeStatus.isClosingTimeEnforced
     });
   } catch (error: any) {
     console.error('Error saving progress:', error);
     res.status(500).json({ error: 'Failed to record candidate progress.' });
+  }
+});
+
+// 4b. Explicit Network Interruption Pause Endpoint
+app.post('/api/pause-exam', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { sessionId, examId, matricNumber, answers = {} } = req.body;
+    if (!sessionId) {
+      res.status(400).json({ error: 'Session ID required.' });
+      return;
+    }
+
+    timerManager.updateAnswers(sessionId, answers);
+    timerManager.pauseSession(sessionId);
+
+    try {
+      await updateDoc(doc(db, 'exam_sessions', sessionId), {
+        answers,
+        isPaused: true,
+        pausedAt: new Date().toISOString(),
+        status: 'paused',
+        lastSavedAt: new Date().toISOString()
+      });
+    } catch (err) {
+      console.warn('Could not sync pause state to Firestore session:', err);
+    }
+
+    const tracker = timerManager.getSession(sessionId);
+    res.json({
+      success: true,
+      isPaused: true,
+      remainingSeconds: tracker?.remainingSeconds ?? 0,
+      message: 'Examination timer paused due to network interruption. Answers preserved.'
+    });
+  } catch (err) {
+    console.error('Error pausing examination:', err);
+    res.status(500).json({ error: 'Failed to pause examination session.' });
   }
 });
 
@@ -1778,9 +1921,15 @@ app.get('/api/session-time/:sessionId', async (req: Request, res: Response): Pro
         fullName: data.fullName,
         department: data.department,
         gender: data.gender || 'Not recorded',
-        startedAtIso: data.startedAt,
-        durationMinutes: data.durationMinutes,
+        firstStartedAtIso: data.firstStartedAt || data.startedAt,
+        durationMinutes: data.durationMinutes || 5,
+        remainingSeconds:
+          typeof data.remainingSeconds === 'number'
+            ? data.remainingSeconds
+            : (data.durationMinutes || 5) * 60,
+        maxRecoveryExpiresAt: data.maxRecoveryExpiresAt,
         closingTimeIso,
+        isPaused: Boolean(data.isPaused),
         existingAnswers: data.answers || {}
       });
       timeStatus = timerManager.getRemainingTime(sessionId);
@@ -1833,7 +1982,7 @@ app.post('/api/auto-submit', async (req: Request, res: Response): Promise<void> 
           fullName: data.fullName,
           department: data.department,
           gender: data.gender || 'Not recorded',
-          startedAtIso: data.startedAt,
+          firstStartedAtIso: data.firstStartedAt || data.startedAt,
           durationMinutes: data.durationMinutes,
           closingTimeIso,
           existingAnswers: answers

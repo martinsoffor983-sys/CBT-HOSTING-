@@ -36,6 +36,11 @@ interface StudentPortalProps {
   onExamActiveChange?: (isActive: boolean) => void;
 }
 
+const FRONT_PAGE_SLIDES = [
+  '/assets/aistudio/IMG-20261112-WA0042_4b5195b2.jpg',
+  '/assets/aistudio/IMG-20261112-WA0041_56a85ab5.jpg'
+] as const;
+
 export const StudentPortal: React.FC<StudentPortalProps> = ({
   initialExamId,
   onExamActiveChange
@@ -44,6 +49,17 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const [step, setStep] = useState<'select' | 'info' | 'instructions' | 'exam' | 'submitted'>(
     initialExamId ? 'info' : 'select'
   );
+
+  // Front-page automatic slideshow state (active only on front page when step === 'select')
+  const [activeSlide, setActiveSlide] = useState<number>(0);
+
+  useEffect(() => {
+    if (step !== 'select') return;
+    const interval = setInterval(() => {
+      setActiveSlide((prev) => (prev === 0 ? 1 : 0));
+    }, 4500);
+    return () => clearInterval(interval);
+  }, [step]);
 
   const [examIdInput, setExamIdInput] = useState(initialExamId || '');
   const [exam, setExam] = useState<PublicExam | null>(null);
@@ -72,6 +88,53 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitModalOpen, setSubmitModalOpen] = useState(false);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const warned60Ref = useRef(false);
+  const warned30Ref = useRef(false);
+
+  // Audio/Chime alert for 1-minute (60s) and 30-second warnings
+  useEffect(() => {
+    if (step !== 'exam') {
+      warned60Ref.current = false;
+      warned30Ref.current = false;
+      return;
+    }
+    if (remainingSeconds <= 60 && remainingSeconds > 30 && !warned60Ref.current) {
+      warned60Ref.current = true;
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+          gain.gain.setValueAtTime(0.2, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.35);
+        }
+      } catch {}
+    }
+    if (remainingSeconds <= 30 && remainingSeconds > 0 && !warned30Ref.current) {
+      warned30Ref.current = true;
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          const ctx = new AudioCtx();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.setValueAtTime(880, ctx.currentTime);
+          gain.gain.setValueAtTime(0.25, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.5);
+        }
+      } catch {}
+    }
+  }, [step, remainingSeconds]);
 
   // Submission Result Receipt (No scores/answers)
   const [submissionReceipt, setSubmissionReceipt] = useState<{
@@ -560,23 +623,58 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   };
   if (step === 'select') {
     return (
-      <div className="max-w-lg mx-auto my-12 px-4">
-        <div className="bg-[#061C13] rounded-3xl shadow-2xl border border-[#D6BF62]/30 overflow-hidden text-center">
-          <div className="bg-gradient-to-b from-[#0A2419] to-[#061C13] p-8 border-b border-[#D6BF62]/30">
-            <div className="w-20 h-24 mx-auto mb-3 bg-[#030515]/60 rounded-2xl p-2.5 flex items-center justify-center border border-[#D6BF62]/30 shadow-inner">
+      <div className="max-w-xl mx-auto my-4 sm:my-6 px-3 sm:px-4">
+        <div className="bg-[#061C13] rounded-2xl sm:rounded-3xl shadow-2xl border border-[#D6BF62]/30 overflow-hidden text-center">
+          {/* Front-Page Banner Area with Automatic Smooth Fade Slideshow */}
+          <div className="relative w-full h-40 sm:h-48 overflow-hidden border-b border-[#D6BF62]/30 bg-[#0A2419]">
+            {/* Exactly the two attached images alternating automatically in a continuous loop */}
+            {FRONT_PAGE_SLIDES.map((slideSrc, idx) => (
               <img
-                src="/assets/aistudio/IMG-20261104-WA0018_41e50466.jpg"
-                alt="SUN Crest"
-                className="w-full h-full object-contain"
+                key={slideSrc}
+                src={slideSrc}
+                alt={idx === 0 ? 'Sports University Campus Entrance Gate' : 'Sports University Main Building'}
+                className={`absolute inset-0 w-full h-full object-cover object-center transition-opacity duration-1000 ease-in-out ${
+                  activeSlide === idx ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'
+                }`}
               />
+            ))}
+
+            {/* University gradient overlay ensuring contrast, text readability, and university branding */}
+            <div className="absolute inset-0 bg-gradient-to-t from-[#061C13] via-[#061C13]/65 to-black/35 z-20 pointer-events-none" />
+
+            {/* Foreground Banner Content (Crest, Title, Subtitle, Slide Indicator) */}
+            <div className="absolute inset-0 z-30 flex flex-col items-center justify-end p-3.5 pb-3 text-center">
+              <div className="w-11 h-13 mb-1 bg-[#030515]/85 backdrop-blur-sm rounded-xl p-1 flex items-center justify-center border border-[#D6BF62]/40 shadow-lg shrink-0">
+                <img
+                  src="/assets/aistudio/IMG-20261104-WA0018_41e50466.jpg"
+                  alt="SUN Crest"
+                  className="w-full h-full object-contain"
+                />
+              </div>
+              <h1 className="text-lg sm:text-xl font-black tracking-tight text-[#F0F9F3] drop-shadow-md">
+                Student Examination Access
+              </h1>
+              <p className="text-[10px] sm:text-xs text-[#D6BF62] font-extrabold uppercase tracking-widest drop-shadow mt-0.5">
+                Citadel for Champions
+              </p>
+
+              {/* Minimalist continuous loop slide indicator */}
+              <div className="flex items-center gap-1.5 mt-1.5" aria-hidden="true">
+                <span
+                  className={`h-1 rounded-full transition-all duration-700 ${
+                    activeSlide === 0 ? 'w-5 bg-[#D6BF62]' : 'w-1.5 bg-white/40'
+                  }`}
+                />
+                <span
+                  className={`h-1 rounded-full transition-all duration-700 ${
+                    activeSlide === 1 ? 'w-5 bg-[#D6BF62]' : 'w-1.5 bg-white/40'
+                  }`}
+                />
+              </div>
             </div>
-            <h1 className="text-2xl font-black tracking-tight text-[#F0F9F3]">Student Examination Access</h1>
-            <p className="text-xs text-[#D6BF62] font-bold uppercase tracking-widest mt-1.5">
-              Citadel for Champions
-            </p>
           </div>
 
-          <div className="p-6 sm:p-8 space-y-6">
+          <div className="p-4 sm:p-5 space-y-3.5">
             <p className="text-xs text-[#ADCDBA] leading-relaxed">
               Enter the unique Exam ID provided by your course lecturer or click on any active university examination listed below to begin.
             </p>
@@ -596,7 +694,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               className="space-y-4"
             >
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1.5 text-left">
+                <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1 text-left">
                   Exam ID <span className="text-[#D6BF62]">*</span>
                 </label>
                 <input
@@ -605,9 +703,9 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   placeholder="e.g. exam_sun_1793819880653"
                   value={examIdInput}
                   onChange={(e) => setExamIdInput(e.target.value)}
-                  className="w-full px-4 py-3.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-mono font-bold text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62] transition"
+                  className="w-full px-3.5 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-mono font-bold text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62] transition"
                 />
-                <p className="text-[11px] text-[#789981] mt-1 text-left">
+                <p className="text-[10px] text-[#789981] mt-0.5 text-left">
                   Enter the unique Exam ID provided by your lecturer.
                 </p>
               </div>
@@ -615,10 +713,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               <button
                 type="submit"
                 disabled={loadingExam || !examIdInput.trim()}
-                className="w-full py-3.5 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-extrabold rounded-xl text-sm shadow-lg hover:shadow-[#0E623B]/30 transition disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                className="w-full py-2.5 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-extrabold rounded-xl text-xs sm:text-sm shadow-md hover:shadow-[#0E623B]/30 transition disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
               >
                 {loadingExam ? (
-                  <div className="w-5 h-5 border-2 border-[#F0F9F3] border-t-transparent rounded-full animate-spin" />
+                  <div className="w-4 h-4 border-2 border-[#F0F9F3] border-t-transparent rounded-full animate-spin" />
                 ) : (
                   <>
                     <span>Access Examination</span>
@@ -630,7 +728,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
             {/* Published Examinations List */}
             {availableExams.length > 0 && (
-              <div className="pt-6 border-t border-[#789981]/20 text-left space-y-3">
+              <div className="pt-4 border-t border-[#789981]/20 text-left space-y-2.5">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold uppercase tracking-wider text-[#ADCDBA]">
                     PUBLISHED EXAMINATIONS ({availableExams.length})
@@ -665,10 +763,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   {availableExams.map((pubExam) => {
                     const startMs = parseLagosExamTime(pubExam.startDate);
                     const endMs = parseLagosExamTime(pubExam.endDate);
-                    // Accurately compute duration in minutes from start and end times if available, or fall back to database durationMinutes
-                    let computedDuration = pubExam.durationMinutes;
+                    const actualDuration = pubExam.durationMinutes || 5;
+                    let windowMinutes = 40;
                     if (startMs && endMs && endMs > startMs) {
-                      computedDuration = Math.round((endMs - startMs) / (60 * 1000));
+                      windowMinutes = Math.round((endMs - startMs) / (60 * 1000));
                     }
 
                     // Precise status evaluation based on actual examination schedule
@@ -701,30 +799,77 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                           setExamIdInput(pubExam.id);
                           loadExamInfo(pubExam.id);
                         }}
-                        className={`p-3.5 rounded-2xl border ${pubExam.isClosed ? 'border-red-900/40 bg-[#160a0a] opacity-80 cursor-not-allowed' : pubExam.notYetOpen ? 'border-yellow-900/40 bg-[#14120a] cursor-not-allowed' : 'border-[#789981]/30 bg-[#0A2419] hover:border-[#D6BF62] hover:bg-[#0E3324] cursor-pointer'} transition flex items-center justify-between gap-3 group`}
+                        className={`p-3.5 rounded-2xl border ${pubExam.isClosed ? 'border-red-900/40 bg-[#160a0a] opacity-80 cursor-not-allowed' : pubExam.notYetOpen ? 'border-yellow-900/40 bg-[#14120a] cursor-not-allowed' : 'border-[#789981]/30 bg-[#0A2419] hover:border-[#D6BF62] hover:bg-[#0E3324] cursor-pointer'} transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 group`}
                       >
-                        <div>
-                          <div className="flex items-center gap-2">
+                        <div className="flex-1 space-y-2.5">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className="font-mono font-bold text-xs text-[#D6BF62] bg-[#030515] px-2 py-0.5 rounded border border-[#789981]/30">
                               {pubExam.courseCode}
                             </span>
-                            <span className="text-[11px] text-[#ADCDBA] font-medium">
-                              {pubExam.department}
+                            <span className="text-[11px] text-[#ADCDBA] font-semibold">
+                              {pubExam.level || '100 LEVEL'}
                             </span>
                             <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${statusBadgeClass}`}>
                               {statusBadgeLabel}
                             </span>
                           </div>
-                          <p className="text-xs font-bold text-[#F0F9F3] mt-1 line-clamp-1 group-hover:text-[#D6BF62] transition">
-                            {pubExam.courseTitle}
-                          </p>
-                          <p className="text-[10px] text-[#ADCDBA] mt-0.5">
-                            Lecturer: <strong className="text-[#D6BF62]">{pubExam.lecturerName || 'Not specified'}</strong>
-                          </p>
-                          <p className="text-[10px] text-[#789981] mt-0.5">
-                            {computedDuration} Mins • {pubExam.questionsCount} Questions
-                            {pubExam.startDate && pubExam.endDate ? ` • ${formatLagosDate(pubExam.startDate)} (${formatLagosTime(pubExam.startDate)} – ${formatLagosTime(pubExam.endDate)})` : ''}
-                          </p>
+
+                          {/* Examination Details Structure */}
+                          <div className="bg-[#030515]/70 rounded-xl p-3.5 border border-[#789981]/25 space-y-2 text-xs">
+                            <div className="pb-1.5 border-b border-[#789981]/20">
+                              <span className="text-xs text-[#ADCDBA] font-medium mr-1.5">Course Title:</span>
+                              <span className="font-extrabold text-[#F0F9F3] text-sm tracking-tight group-hover:text-[#D6BF62] transition inline-block">{pubExam.courseTitle}</span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-x-4 sm:gap-x-6 gap-y-1 sm:gap-y-1.5 text-xs text-[#ADCDBA]">
+                              <div>
+                                <span className="text-[#ADCDBA]">Course Code: </span>
+                                <span className="font-bold text-[#D6BF62] font-mono">{pubExam.courseCode}</span>
+                              </div>
+                              <div>
+                                <span className="text-[#ADCDBA]">Level: </span>
+                                <span className="font-bold text-[#F0F9F3]">{pubExam.level || '100 LEVEL'}</span>
+                              </div>
+                              <div>
+                                <span className="text-[#ADCDBA]">Department: </span>
+                                <span className="font-medium text-[#F0F9F3]">{pubExam.department}</span>
+                              </div>
+                              <div>
+                                <span className="text-[#ADCDBA]">Lecturer: </span>
+                                <span className="font-medium text-[#F0F9F3]">{pubExam.lecturerName || 'Not specified'}</span>
+                              </div>
+                              <div>
+                                <span className="text-[#ADCDBA]">Questions: </span>
+                                <span className="font-semibold text-[#F0F9F3]">{pubExam.questionsCount}</span>
+                              </div>
+                              <div>
+                                <span className="text-[#ADCDBA]">Date: </span>
+                                <span className="font-medium text-[#F0F9F3]">
+                                  {pubExam.startDate ? formatLagosDate(pubExam.startDate) : 'Not scheduled'}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-[#ADCDBA]">Exam Window: </span>
+                                <span className="font-medium text-[#F0F9F3]">
+                                  {pubExam.startDate && pubExam.endDate
+                                    ? `${formatLagosTime(pubExam.startDate)} – ${formatLagosTime(pubExam.endDate)}`
+                                    : 'N/A'}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-[#ADCDBA]">Exam Timer: </span>
+                                <span className="font-bold text-[#10B981]">
+                                  {pubExam.durationMinutes ? `${pubExam.durationMinutes} minutes` : '5 minutes'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Explicit explanatory notice for candidates */}
+                          <div className="p-2 bg-[#030515]/80 rounded-xl border border-[#789981]/25 text-[10px] text-[#ADCDBA] leading-relaxed">
+                            <span className="text-[#D6BF62] font-bold mr-1">ℹ️ Schedule note:</span>
+                            The access and recovery window accommodates login issues, logout problems and reconnection. It does not represent the time available for answering examination questions.
+                          </div>
                         </div>
 
                         <button
@@ -769,31 +914,31 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   // ==========================================
   if (step === 'info') {
     return (
-      <div className="max-w-xl mx-auto my-8 px-4">
-        <div className="bg-[#061C13] rounded-3xl shadow-2xl border border-[#D6BF62]/30 overflow-hidden">
+      <div className="max-w-xl mx-auto my-4 sm:my-6 px-3 sm:px-4">
+        <div className="bg-[#061C13] rounded-2xl sm:rounded-3xl shadow-2xl border border-[#D6BF62]/30 overflow-hidden">
           {/* Header Banner */}
-          <div className="bg-gradient-to-b from-[#0A2419] to-[#061C13] p-6 text-white border-b border-[#D6BF62]/30">
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-16 bg-[#030515]/60 rounded-xl p-2 flex items-center justify-center border border-[#D6BF62]/30 shadow-inner">
+          <div className="bg-gradient-to-b from-[#0A2419] to-[#061C13] p-4 sm:p-5 text-white border-b border-[#D6BF62]/30">
+            <div className="flex items-center gap-3 sm:gap-4">
+              <div className="w-12 h-14 bg-[#030515]/60 rounded-xl p-1.5 flex items-center justify-center border border-[#D6BF62]/30 shadow-inner shrink-0">
                 <img
                   src="/assets/aistudio/IMG-20261104-WA0018_41e50466.jpg"
                   alt="SUN Crest"
                   className="w-full h-full object-contain"
                 />
               </div>
-              <div>
+              <div className="min-w-0">
                 <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-[#D6BF62]/20 border border-[#D6BF62]/40 text-[#D6BF62] uppercase tracking-wider">
                   Stage 1: Student Registration
                 </span>
-                <h2 className="text-xl font-black mt-1 text-[#F0F9F3]">{exam?.courseCode}</h2>
-                <p className="text-xs text-[#ADCDBA] line-clamp-1">{exam?.courseTitle}</p>
+                <h2 className="text-lg sm:text-xl font-black mt-0.5 text-[#F0F9F3] truncate">{exam?.courseCode}</h2>
+                <p className="text-xs text-[#ADCDBA] truncate">{exam?.courseTitle}</p>
               </div>
             </div>
           </div>
 
-          <div className="p-6 sm:p-8 space-y-6">
+          <div className="p-4 sm:p-6 space-y-4">
             {/* Stage Indicator */}
-            <div className="flex items-center justify-between text-xs font-bold text-[#789981] pb-2 border-b border-[#789981]/20">
+            <div className="flex items-center justify-between text-[11px] font-bold text-[#789981] pb-2 border-b border-[#789981]/20">
               <span className="text-[#D6BF62]">1. Registration Form</span>
               <span>2. Instructions</span>
               <span>3. Examination</span>
@@ -879,88 +1024,82 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               }}
               className="space-y-4"
             >
-              {/* Course Information & Publication Details Display Fields */}
-              <div className="p-4 bg-[#0A2419] rounded-2xl border border-[#789981]/30 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Targeted Examination Details Front-Page Display */}
+              <div className="p-3.5 sm:p-4 bg-[#0A2419] rounded-xl border border-[#789981]/30 space-y-2.5 shadow-inner">
+                <div className="pb-1.5 border-b border-[#789981]/20">
+                  <span className="text-xs text-[#ADCDBA] font-medium mr-1.5">Course Title:</span>
+                  <span className="font-extrabold text-[#F0F9F3] text-sm sm:text-base tracking-tight inline-block">{exam?.courseTitle}</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-x-4 sm:gap-x-6 gap-y-1 sm:gap-y-1.5 text-xs text-[#ADCDBA]">
                   <div>
-                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                      Course Code
-                    </label>
-                    <p className="text-sm font-black font-mono text-[#D6BF62]">{exam?.courseCode}</p>
+                    <span className="text-[#ADCDBA]">Course Code: </span>
+                    <span className="font-bold text-[#D6BF62] font-mono">{exam?.courseCode}</span>
                   </div>
+
                   <div>
-                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                      Course Title
-                    </label>
-                    <p className="text-xs font-bold text-[#F0F9F3] line-clamp-2">{exam?.courseTitle}</p>
+                    <span className="text-[#ADCDBA]">Level: </span>
+                    <span className="font-bold text-[#F0F9F3]">{exam?.level || '100 LEVEL'}</span>
+                  </div>
+
+                  <div>
+                    <span className="text-[#ADCDBA]">Department: </span>
+                    <span className="font-medium text-[#F0F9F3]">{exam?.department}</span>
+                  </div>
+
+                  <div>
+                    <span className="text-[#ADCDBA]">Lecturer: </span>
+                    <span className="font-medium text-[#F0F9F3]">{exam?.lecturerName || 'Not specified'}</span>
+                  </div>
+
+                  <div>
+                    <span className="text-[#ADCDBA]">Questions: </span>
+                    <span className="font-semibold text-[#F0F9F3]">
+                      {exam?.questionsCount || 0}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="text-[#ADCDBA]">Date: </span>
+                    <span className="font-medium text-[#F0F9F3]">
+                      {exam?.startDate ? formatLagosDate(exam.startDate) : 'Not scheduled'}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="text-[#ADCDBA]">Exam Window: </span>
+                    <span className="font-medium text-[#F0F9F3]">
+                      {exam?.startDate && exam?.endDate
+                        ? `${formatLagosTime(exam.startDate)} – ${formatLagosTime(exam.endDate)}`
+                        : 'N/A'}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span className="text-[#ADCDBA]">Exam Timer: </span>
+                    <span className="font-bold text-[#10B981]">
+                      {exam?.durationMinutes ? `${exam.durationMinutes} minutes` : '5 minutes'}
+                    </span>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[#789981]/20 text-xs">
-                  <div>
-                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                      Course Lecturer
-                    </label>
-                    <p className="text-xs font-bold text-[#D6BF62]">{exam?.lecturerName || 'Not specified'}</p>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                      Department
-                    </label>
-                    <p className="text-xs font-medium text-[#ADCDBA]">{exam?.department}</p>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                      Duration
-                    </label>
-                    <p className="text-xs font-bold text-[#F0F9F3]">
-                      {(() => {
-                        if (!exam) return '45 Minutes';
-                        const sMs = parseLagosExamTime(exam.startDate);
-                        const eMs = parseLagosExamTime(exam.endDate);
-                        if (sMs && eMs && eMs > sMs) {
-                          return `${Math.round((eMs - sMs) / (60 * 1000))} Minutes`;
-                        }
-                        return `${exam.durationMinutes || 45} Minutes`;
-                      })()}
-                    </p>
-                  </div>
+                {/* Explanatory Notice */}
+                <div className="p-2 bg-[#030515]/80 rounded-lg border border-[#789981]/25 text-[10px] sm:text-[11px] text-[#ADCDBA] leading-relaxed">
+                  <span className="text-[#D6BF62] font-bold mr-1">ℹ️ Schedule note:</span>
+                  The access and recovery window accommodates login issues, logout problems and reconnection. It does not represent the time available for answering examination questions.
                 </div>
-
-                {exam?.startDate && (
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[#789981]/20 text-xs">
-                    <div>
-                      <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                        Examination Date
-                      </label>
-                      <p className="text-xs font-bold text-[#F0F9F3]">{formatLagosDate(exam.startDate)}</p>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                        Starting Time
-                      </label>
-                      <p className="text-xs font-bold text-[#10B981]">{formatLagosTime(exam.startDate)} (WAT)</p>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-bold uppercase tracking-wider text-[#789981] mb-0.5">
-                        Closing Time
-                      </label>
-                      <p className="text-xs font-bold text-amber-400">{formatLagosTime(exam.endDate)} (WAT)</p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Calendar Sync Integration for this exam */}
-                {exam && (
-                  <div className="pt-3 border-t border-[#789981]/20">
-                    <GoogleCalendarSync
-                      exams={[exam]}
-                      candidateMatric={studentInfo.matricNumber}
-                      departmentFilter={exam.department}
-                    />
-                  </div>
-                )}
               </div>
+
+              {/* Visually Separate Examination Reminders */}
+              {exam && (
+                <div className="pt-1">
+                  <GoogleCalendarSync
+                    exams={[exam]}
+                    candidateMatric={studentInfo.matricNumber}
+                    departmentFilter={exam.department}
+                  />
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1.5 flex items-center gap-1.5">
@@ -1307,36 +1446,53 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               </div>
             </div>
 
-            {/* Scheduled Availability Alert Card */}
+            {/* Scheduled Availability Alert Card & Administrative Access Window */}
             {exam?.endDate && (
-              <div className="p-3.5 bg-[#0A2419] border border-[#D6BF62]/40 rounded-2xl flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2.5">
-                  <Clock className="w-4 h-4 text-[#D6BF62] shrink-0" />
-                  <div>
-                    <span className="text-[10px] text-[#789981] font-bold uppercase tracking-wider block">Official Closing Time</span>
-                    <span className="font-bold text-[#F0F9F3]">
-                      {formatLagosDateTime(exam.endDate)}
-                    </span>
+              <div className="p-4 bg-[#0A2419] border border-[#789981]/30 rounded-2xl space-y-2.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2.5">
+                    <Clock className="w-4 h-4 text-[#D6BF62] shrink-0" />
+                    <div>
+                      <span className="text-[10px] text-[#789981] font-bold uppercase tracking-wider block">
+                        Access & Recovery Window
+                      </span>
+                      <span className="font-bold text-[#F0F9F3]">
+                        40 Minutes ({formatLagosTime(exam.startDate)} – {formatLagosTime(exam.endDate)} WAT)
+                      </span>
+                    </div>
                   </div>
+                  <span className="text-[10px] bg-[#0E623B] text-[#D6BF62] font-extrabold px-2.5 py-0.5 rounded-full border border-[#D6BF62]/40 uppercase tracking-wider shrink-0 self-start sm:self-auto">
+                    Administrative Window
+                  </span>
                 </div>
-                <span className="text-[10px] bg-[#0E623B] text-[#D6BF62] font-extrabold px-2.5 py-0.5 rounded-full border border-[#D6BF62]/40 uppercase tracking-wider shrink-0">
-                  Strict Enforcement
-                </span>
+
+                <div className="p-2.5 bg-[#030515]/75 rounded-xl border border-[#789981]/20 text-[11px] text-[#ADCDBA] leading-relaxed">
+                  <span className="text-[#D6BF62] font-bold mr-1">ℹ️ Schedule note:</span>
+                  The access and recovery window accommodates login issues, logout problems and reconnection. It does not represent the time available for answering examination questions.
+                </div>
               </div>
             )}
 
-            {/* Exam Parameters */}
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-4 bg-[#0A2419] rounded-2xl border border-[#789981]/30 text-center">
+            {/* Exam Parameters: Prominent Actual Examination Duration */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="p-4 bg-[#0E623B]/20 rounded-2xl border-2 border-[#D6BF62] text-center shadow-lg">
                 <Clock className="w-6 h-6 text-[#D6BF62] mx-auto mb-1" />
-                <span className="text-xs text-[#ADCDBA] font-semibold">Allocated Duration</span>
-                <p className="text-xl font-black text-[#F0F9F3] mt-0.5">{exam?.durationMinutes} Minutes</p>
+                <span className="text-xs text-[#D6BF62] font-black uppercase tracking-wider block">
+                  Actual Examination Duration
+                </span>
+                <p className="text-2xl font-black text-[#F0F9F3] mt-0.5">{exam?.durationMinutes || 5} Minutes</p>
+                <span className="text-[10px] text-[#ADCDBA] block mt-1 font-medium">
+                  Continuous answering countdown starts when you begin
+                </span>
               </div>
 
               <div className="p-4 bg-[#0A2419] rounded-2xl border border-[#789981]/30 text-center">
                 <FileText className="w-6 h-6 text-[#D6BF62] mx-auto mb-1" />
-                <span className="text-xs text-[#ADCDBA] font-semibold">Total Questions</span>
-                <p className="text-xl font-black text-[#F0F9F3] mt-0.5">{exam?.questionsCount} Questions</p>
+                <span className="text-xs text-[#ADCDBA] font-semibold block">Total Questions</span>
+                <p className="text-2xl font-black text-[#F0F9F3] mt-0.5">{exam?.questionsCount} Questions</p>
+                <span className="text-[10px] text-[#789981] block mt-1 font-medium">
+                  Single-attempt session
+                </span>
               </div>
             </div>
 
@@ -1347,19 +1503,22 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               </h3>
               <ul className="text-xs text-[#ADCDBA] space-y-2.5 list-disc pl-5 leading-relaxed">
                 <li>
-                  <strong className="text-[#F0F9F3]">Official Closing Time Priority:</strong> The official closing time strictly takes priority over your individual timer. Once the closing time arrives, the examination ends immediately and your saved answers are automatically submitted.
+                  <strong className="text-[#F0F9F3]">Actual 5-Minute Answering Countdown:</strong> Once you click &quot;Begin Examination&quot;, your individual countdown timer of 5 minutes begins immediately. When the 5-minute timer expires, your exam automatically submits.
                 </li>
                 <li>
-                  <strong className="text-[#F0F9F3]">Continuous Server-Side Timer:</strong> Your individual countdown counts down automatically. You cannot continue writing beyond the scheduled closing time.
+                  <strong className="text-[#F0F9F3]">Access and Recovery Window (40 Minutes):</strong> The access and recovery window accommodates login issues, logout problems and reconnection. It does not represent the time available for answering examination questions.
                 </li>
                 <li>
-                  <strong className="text-[#F0F9F3]">Automatic Submission:</strong> The examination engine continuously saves your answers in the background and automatically submits your responses if the countdown expires.
+                  <strong className="text-[#F0F9F3]">Official Closing Time Priority:</strong> The official closing time strictly takes priority over your individual timer. If you begin late within the 40-minute window, the examination will close at the scheduled end time regardless of remaining duration.
+                </li>
+                <li>
+                  <strong className="text-[#F0F9F3]">Continuous Server-Side Timer & Countdown Integrity:</strong> Your individual timer runs continuously on the server. Refreshing the page, closing the tab, or reconnecting does NOT reset or pause the countdown.
+                </li>
+                <li>
+                  <strong className="text-[#F0F9F3]">Automatic Submission:</strong> The examination engine continuously saves your answers in the background and automatically submits your responses when your 5 minutes expire or at the closing time.
                 </li>
                 <li>
                   <strong className="text-[#F0F9F3]">One-Time Attempt:</strong> Students who have already submitted are strictly prohibited from writing or reopening the examination.
-                </li>
-                <li>
-                  <strong className="text-[#F0F9F3]">Confidentiality Policy:</strong> Individual scores and results are securely recorded in the lecturer portal and are not displayed on candidate screens.
                 </li>
               </ul>
             </div>
@@ -1429,19 +1588,28 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               </div>
             </div>
 
-            {/* Countdown Timer */}
+            {/* Prominent Countdown Timer */}
             <div className="flex items-center gap-3">
               <div
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl font-mono text-sm sm:text-base font-bold transition shadow-sm ${
-                  isTimeCritical
-                    ? 'bg-red-600 text-white animate-pulse'
+                className={`flex items-center gap-2.5 px-4 py-2 rounded-xl font-mono text-sm sm:text-base font-black transition shadow-md border ${
+                  remainingSeconds <= 30
+                    ? 'bg-red-600 text-white border-red-300 animate-pulse ring-2 ring-red-400'
+                    : remainingSeconds <= 60
+                    ? 'bg-amber-600 text-white border-amber-300 animate-pulse'
                     : isTimeUrgent
-                    ? 'bg-amber-500 text-white'
-                    : 'bg-[#0A2419] border border-[#D6BF62]/40 text-[#D6BF62]'
+                    ? 'bg-amber-500 text-white border-amber-400'
+                    : 'bg-[#0A2419] border-[#D6BF62] text-[#D6BF62]'
                 }`}
               >
-                <Clock className="w-4 h-4 text-[#D6BF62]" />
-                <span>{formatTime(remainingSeconds)}</span>
+                <Clock className="w-4 h-4 shrink-0 text-[#D6BF62]" />
+                <div className="flex items-center gap-1.5 leading-none">
+                  <span className="text-[10px] uppercase tracking-wider font-extrabold opacity-80 hidden sm:inline">
+                    Time Remaining:
+                  </span>
+                  <span className="text-sm sm:text-base font-black tracking-widest">
+                    {formatTime(remainingSeconds)}
+                  </span>
+                </div>
               </div>
 
               {/* Submit Button */}
@@ -1523,6 +1691,47 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
         {/* Main Examination Question Area */}
         <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 w-full flex-1">
+          {/* Prominent Timed Candidate Warning Banners (1 Minute and 30 Seconds) */}
+          {remainingSeconds <= 30 && remainingSeconds > 0 ? (
+            <div className="mb-6 p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-red-950/95 via-red-900/90 to-red-950/95 border-2 border-red-500 text-red-100 shadow-2xl flex items-center gap-4 animate-pulse ring-2 ring-red-500/50">
+              <div className="w-12 h-12 rounded-xl bg-red-600/30 border border-red-400 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-7 h-7 text-red-300 animate-bounce" />
+              </div>
+              <div className="flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h4 className="font-black text-red-300 text-sm sm:text-base tracking-wide uppercase">
+                    FINAL CRITICAL WARNING: 30 SECONDS REMAINING!
+                  </h4>
+                  <span className="text-xs font-mono font-black px-2.5 py-0.5 rounded-full bg-red-500 text-white animate-pulse">
+                    {remainingSeconds}s remaining
+                  </span>
+                </div>
+                <p className="text-xs text-red-100 mt-1 leading-relaxed">
+                  Your actual examination time is ending in <strong>{remainingSeconds} seconds</strong>. The examination engine is preparing to automatically finalize and submit your responses. Do not refresh or navigate away from this screen.
+                </p>
+              </div>
+            </div>
+          ) : remainingSeconds <= 60 && remainingSeconds > 30 ? (
+            <div className="mb-6 p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-amber-950/95 via-amber-900/85 to-amber-950/95 border-2 border-amber-400 text-amber-100 shadow-xl flex items-center gap-4 animate-pulse">
+              <div className="w-12 h-12 rounded-xl bg-amber-500/25 border border-amber-400/50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-7 h-7 text-amber-300" />
+              </div>
+              <div className="flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h4 className="font-black text-amber-300 text-sm sm:text-base tracking-wide uppercase">
+                    1-MINUTE EXAMINATION WARNING
+                  </h4>
+                  <span className="text-xs font-mono font-black px-2.5 py-0.5 rounded-full bg-amber-400 text-amber-950">
+                    {remainingSeconds}s remaining
+                  </span>
+                </div>
+                <p className="text-xs text-amber-100 mt-1 leading-relaxed">
+                  You have <strong>1 minute remaining</strong>. Please conclude answering and review your selections now. When the 5-minute examination duration expires, your answers will be automatically submitted.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
             {/* Question Card (Cols 1-3) */}
             <div className="lg:col-span-3 space-y-4">

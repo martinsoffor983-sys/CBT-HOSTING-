@@ -25,7 +25,7 @@ import {
   UserCheck,
   Upload
 } from 'lucide-react';
-import { Exam, Question, RegisteredCandidate } from '../../types';
+import { Exam, Question, RegisteredCandidate, SUN_LEVELS } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { db, handleFirestoreError, OperationType } from '../../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
@@ -100,6 +100,7 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
   const [courseTitle, setCourseTitle] = useState(
     initialExam?.courseTitle || 'Foundations of Exercise Physiology & Sports Performance'
   );
+  const [level, setLevel] = useState<string>(initialExam?.level || '');
   const [lecturerName, setLecturerName] = useState(initialExam?.lecturerName || '');
 
   // Section 2: Department Selection (Simplified: "All Departments" or "Others")
@@ -407,6 +408,10 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
     }
 
     if (isPublishing) {
+      if (!level || !level.trim()) {
+        errs.push('Level is compulsory. Please select a study level (100 LEVEL – 600 LEVEL) before publishing.');
+      }
+
       if (!lecturerName.trim()) {
         errs.push("Lecturer's Name is mandatory before publishing an examination.");
       }
@@ -484,6 +489,7 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
       lecturerName: capitalizeProper(lecturerName.trim()),
       courseCode: courseCode.trim().toUpperCase(),
       courseTitle: courseTitle.trim(),
+      level: level.trim(),
       department: resolvedDepartment,
       durationMinutes: Number(durationMinutes) || 45,
       startDate,
@@ -679,6 +685,67 @@ export const ExamEditor: React.FC<ExamEditorProps> = ({ initialExam, onBack, onS
                 onChange={(e) => setCourseTitle(e.target.value)}
                 className="w-full px-4 py-3 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-semibold text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62]"
               />
+            </div>
+
+            {/* Compulsory Level Selection Field */}
+            <div className="md:col-span-2 bg-[#0A2419] p-5 rounded-2xl border border-[#789981]/30 space-y-3">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA]">
+                  Level <span className="text-[#D6BF62]">*</span>
+                </label>
+                <span className="text-[10px] text-[#D6BF62] font-semibold bg-[#030515] px-2.5 py-0.5 rounded-full border border-[#D6BF62]/30">
+                  Compulsory for publication
+                </span>
+              </div>
+
+              <p className="text-xs text-[#ADCDBA]">
+                Select the academic level for this examination. Required for examination publishing and student verification.
+              </p>
+
+              {/* Level Selection Pills */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5 pt-1">
+                {SUN_LEVELS.map((lvl) => {
+                  const isSelected = level === lvl;
+                  return (
+                    <button
+                      key={lvl}
+                      type="button"
+                      onClick={() => setLevel(lvl)}
+                      className={`py-2.5 px-3 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer border ${
+                        isSelected
+                          ? 'bg-[#0E623B] text-[#F0F9F3] border-[#D6BF62] ring-2 ring-[#D6BF62]/50 shadow-md shadow-[#0E623B]/30'
+                          : 'bg-[#030515]/60 hover:bg-[#030515] text-[#ADCDBA] hover:text-[#F0F9F3] border-[#789981]/30 hover:border-[#789981]/60'
+                      }`}
+                    >
+                      {isSelected && <Check className="w-3.5 h-3.5 text-[#D6BF62] stroke-[3]" />}
+                      <span>{lvl}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Accessible Dropdown Selector */}
+              <div className="pt-1.5">
+                <select
+                  value={level}
+                  onChange={(e) => setLevel(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-[#030515]/80 border border-[#789981]/40 rounded-xl text-xs font-semibold text-[#F0F9F3] focus:outline-none focus:border-[#D6BF62] cursor-pointer"
+                >
+                  <option value="" disabled>-- Select Academic Level (Compulsory) --</option>
+                  {SUN_LEVELS.map((lvl) => (
+                    <option key={lvl} value={lvl} className="bg-[#061C13] text-[#F0F9F3]">
+                      {lvl}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {!level && (
+                <p className="text-[11px] text-amber-300 flex items-center gap-1 pt-0.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span>Level selection is compulsory before publishing.</span>
+                </p>
+              )}
             </div>
 
             {/* Lecturer's Name Field (Dedicated Mandatory Field) */}
