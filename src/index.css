@@ -1,10 +1,18 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 @layer base {
   body {
     background-color: #030515;
     color: #F0F9F3;
+    font-family: var(--font-sans);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
 
   ::selection {
@@ -30,5 +38,72 @@
 
   ::-webkit-scrollbar-thumb:hover {
     background: #0E623B;
+  }
+}
+
+@keyframes sunAmbientFloat {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.45;
+  }
+  50% {
+    transform: translate3d(18px, -14px, 0) scale(1.06);
+    opacity: 0.65;
+  }
+}
+
+@keyframes sunFadeUp {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes sunDropdownIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes sunHeroZoom {
+  0% {
+    transform: scale(1);
+  }
+  100% {
+    transform: scale(1.045);
+  }
+}
+
+.animate-sun-ambient {
+  animation: sunAmbientFloat 16s ease-in-out infinite;
+}
+
+.animate-sun-fade-up {
+  animation: sunFadeUp 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-sun-dropdown {
+  animation: sunDropdownIn 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-sun-hero-zoom {
+  animation: sunHeroZoom 9s ease-out alternate infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-sun-ambient,
+  .animate-sun-fade-up,
+  .animate-sun-dropdown,
+  .animate-sun-hero-zoom {
+    animation: none !important;
   }
 }

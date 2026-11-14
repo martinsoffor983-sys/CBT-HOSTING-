@@ -23,7 +23,10 @@ import {
   Sparkles,
   Award,
   BarChart3,
-  UserCheck
+  UserCheck,
+  Lock,
+  BookOpen,
+  Info
 } from 'lucide-react';
 import { PublicExam, SanitizedQuestion, StudentInfo } from '../../types';
 import { formatLagosDateTime, formatLagosTime, formatLagosDate, parseLagosExamTime } from '../../utils/timeUtils';
@@ -622,66 +625,93 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     }
   };
   if (step === 'select') {
+    const hasOngoingExam = availableExams.some((e) => !e.isClosed && !e.notYetOpen);
+    const hasUpcomingExam = availableExams.some((e) => e.notYetOpen);
+
     return (
-      <div className="max-w-xl mx-auto my-4 sm:my-6 px-3 sm:px-4">
-        <div className="bg-[#061C13] rounded-2xl sm:rounded-3xl shadow-2xl border border-[#D6BF62]/30 overflow-hidden text-center">
-          {/* Front-Page Banner Area with Automatic Smooth Fade Slideshow */}
-          <div className="relative w-full h-40 sm:h-48 overflow-hidden border-b border-[#D6BF62]/30 bg-[#0A2419]">
-            {/* Exactly the two attached images alternating automatically in a continuous loop */}
-            {FRONT_PAGE_SLIDES.map((slideSrc, idx) => (
+      <div className="max-w-6xl mx-auto my-5 sm:my-8 px-4 sm:px-6 space-y-6 animate-sun-fade-up">
+        {/* Front-Page Campus Banner with Automatic Smooth Fade Slideshow */}
+        <section
+          aria-label="Sports University of Nigeria Student Examination Access"
+          className="relative w-full h-56 sm:h-64 md:h-72 rounded-2xl sm:rounded-3xl overflow-hidden border border-[#D6BF62]/30 shadow-2xl bg-[#061C13]"
+        >
+          {FRONT_PAGE_SLIDES.map((slideSrc, idx) => (
+            <img
+              key={slideSrc}
+              src={slideSrc}
+              alt={idx === 0 ? 'Sports University Campus Entrance Gate' : 'Sports University Main Building'}
+              className={`absolute inset-0 w-full h-full object-cover object-center transition-opacity duration-1000 ease-in-out ${
+                activeSlide === idx ? 'opacity-100 z-10 animate-sun-hero-zoom' : 'opacity-0 z-0 pointer-events-none'
+              }`}
+            />
+          ))}
+
+          {/* Contrast & editorial scrim for clean legibility */}
+          <div className="absolute inset-0 bg-gradient-to-t from-[#030515]/95 via-[#061C13]/70 to-black/35 z-20 pointer-events-none" />
+
+          {/* Hero Content */}
+          <div className="relative z-30 h-full flex flex-col items-center justify-end text-center px-5 sm:px-8 pb-6 sm:pb-7">
+            <div className="w-12 h-14 sm:w-14 sm:h-16 mb-2.5 bg-[#030515]/85 backdrop-blur-md rounded-xl p-1.5 flex items-center justify-center border border-[#D6BF62]/45 shadow-lg shrink-0">
               <img
-                key={slideSrc}
-                src={slideSrc}
-                alt={idx === 0 ? 'Sports University Campus Entrance Gate' : 'Sports University Main Building'}
-                className={`absolute inset-0 w-full h-full object-cover object-center transition-opacity duration-1000 ease-in-out ${
-                  activeSlide === idx ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'
-                }`}
+                src="/assets/aistudio/IMG-20261104-WA0018_41e50466.jpg"
+                alt="SUN Crest"
+                className="w-full h-full object-contain"
               />
-            ))}
-
-            {/* University gradient overlay ensuring contrast, text readability, and university branding */}
-            <div className="absolute inset-0 bg-gradient-to-t from-[#061C13] via-[#061C13]/65 to-black/35 z-20 pointer-events-none" />
-
-            {/* Foreground Banner Content (Crest, Title, Subtitle, Slide Indicator) */}
-            <div className="absolute inset-0 z-30 flex flex-col items-center justify-end p-3.5 pb-3 text-center">
-              <div className="w-11 h-13 mb-1 bg-[#030515]/85 backdrop-blur-sm rounded-xl p-1 flex items-center justify-center border border-[#D6BF62]/40 shadow-lg shrink-0">
-                <img
-                  src="/assets/aistudio/IMG-20261104-WA0018_41e50466.jpg"
-                  alt="SUN Crest"
-                  className="w-full h-full object-contain"
-                />
-              </div>
-              <h1 className="text-lg sm:text-xl font-black tracking-tight text-[#F0F9F3] drop-shadow-md">
-                Student Examination Access
-              </h1>
-              <p className="text-[10px] sm:text-xs text-[#D6BF62] font-extrabold uppercase tracking-widest drop-shadow mt-0.5">
-                Citadel for Champions
-              </p>
-
-              {/* Minimalist continuous loop slide indicator */}
-              <div className="flex items-center gap-1.5 mt-1.5" aria-hidden="true">
-                <span
-                  className={`h-1 rounded-full transition-all duration-700 ${
-                    activeSlide === 0 ? 'w-5 bg-[#D6BF62]' : 'w-1.5 bg-white/40'
-                  }`}
-                />
-                <span
-                  className={`h-1 rounded-full transition-all duration-700 ${
-                    activeSlide === 1 ? 'w-5 bg-[#D6BF62]' : 'w-1.5 bg-white/40'
-                  }`}
-                />
-              </div>
             </div>
-          </div>
 
-          <div className="p-4 sm:p-5 space-y-3.5">
-            <p className="text-xs text-[#ADCDBA] leading-relaxed">
-              Enter the unique Exam ID provided by your course lecturer or click on any active university examination listed below to begin.
+            <p className="text-[11px] sm:text-xs text-[#D6BF62] font-bold uppercase tracking-[0.18em] drop-shadow">
+              Citadel for Champions
+            </p>
+            <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight text-[#F0F9F3] mt-1 drop-shadow-md [text-wrap:balance]">
+              Student Examination Access
+            </h1>
+            <p className="text-xs sm:text-sm text-[#ADCDBA] max-w-xl mt-1.5 leading-relaxed">
+              Enter your unique Exam ID or select a scheduled course examination below to begin.
             </p>
 
+            {/* Minimalist continuous loop slide indicator */}
+            <div className="flex items-center gap-2 mt-3" aria-hidden="true">
+              <span
+                className={`h-1 rounded-full transition-all duration-700 ${
+                  activeSlide === 0 ? 'w-6 bg-[#D6BF62]' : 'w-2 bg-white/40'
+                }`}
+              />
+              <span
+                className={`h-1 rounded-full transition-all duration-700 ${
+                  activeSlide === 1 ? 'w-6 bg-[#D6BF62]' : 'w-2 bg-white/40'
+                }`}
+              />
+            </div>
+          </div>
+        </section>
+
+        {/* Balanced Responsive Workspace Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 sm:gap-6 items-start">
+          {/* Direct Exam ID Entry Panel */}
+          <section
+            aria-labelledby="exam-access-heading"
+            className="lg:col-span-5 lg:col-start-1 lg:row-start-1 bg-[#061C13]/95 rounded-2xl sm:rounded-3xl border border-[#D6BF62]/30 shadow-xl p-5 sm:p-6 space-y-4 min-w-0"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 id="exam-access-heading" className="text-base sm:text-lg font-extrabold text-[#F0F9F3] tracking-tight">
+                  Enter Exam ID
+                </h2>
+                <p className="text-xs text-[#ADCDBA] mt-1 leading-relaxed">
+                  Use the examination code provided by your course lecturer.
+                </p>
+              </div>
+              <div className="w-9 h-9 rounded-xl bg-[#0A2419] border border-[#D6BF62]/30 flex items-center justify-center shrink-0">
+                <Hash className="w-4 h-4 text-[#D6BF62]" />
+              </div>
+            </div>
+
             {examError && (
-              <div className="p-3.5 bg-[#2A0808] border border-red-500/40 rounded-xl text-red-200 text-xs flex items-center gap-2 text-left">
-                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+              <div
+                role="alert"
+                className="p-3.5 bg-[#2A0808] border border-red-500/40 rounded-xl text-red-200 text-xs flex items-start gap-2.5 text-left"
+              >
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                 <span>{examError}</span>
               </div>
             )}
@@ -691,29 +721,30 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 e.preventDefault();
                 if (examIdInput.trim()) loadExamInfo(examIdInput.trim());
               }}
-              className="space-y-4"
+              className="space-y-3.5"
             >
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1 text-left">
+                <label
+                  htmlFor="homepage-exam-id"
+                  className="block text-xs font-bold uppercase tracking-wider text-[#ADCDBA] mb-1.5 text-left"
+                >
                   Exam ID <span className="text-[#D6BF62]">*</span>
                 </label>
                 <input
+                  id="homepage-exam-id"
                   type="text"
                   required
                   placeholder="e.g. exam_sun_1793819880653"
                   value={examIdInput}
                   onChange={(e) => setExamIdInput(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-mono font-bold text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62] transition"
+                  className="w-full px-3.5 py-2.5 bg-[#0A2419] border border-[#789981]/40 rounded-xl text-sm font-mono font-semibold text-[#F0F9F3] placeholder-[#789981]/70 focus:outline-none focus:border-[#D6BF62] focus:ring-1 focus:ring-[#D6BF62] transition"
                 />
-                <p className="text-[10px] text-[#789981] mt-0.5 text-left">
-                  Enter the unique Exam ID provided by your lecturer.
-                </p>
               </div>
 
               <button
                 type="submit"
                 disabled={loadingExam || !examIdInput.trim()}
-                className="w-full py-2.5 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-extrabold rounded-xl text-xs sm:text-sm shadow-md hover:shadow-[#0E623B]/30 transition disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                className="w-full py-3 bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62] text-[#F0F9F3] font-bold rounded-xl text-sm shadow-lg hover:shadow-[#0E623B]/30 transition disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer active:scale-[0.99]"
               >
                 {loadingExam ? (
                   <div className="w-4 h-4 border-2 border-[#F0F9F3] border-t-transparent rounded-full animate-spin" />
@@ -725,185 +756,218 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 )}
               </button>
             </form>
+          </section>
 
-            {/* Published Examinations List */}
-            {availableExams.length > 0 && (
-              <div className="pt-4 border-t border-[#789981]/20 text-left space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-[#ADCDBA]">
-                    PUBLISHED EXAMINATIONS ({availableExams.length})
-                  </h3>
-                  {/* Dynamic schedule status summary badge */}
-                  {(() => {
-                    const hasOngoing = availableExams.some((e) => !e.isClosed && !e.notYetOpen);
-                    const hasUpcoming = availableExams.some((e) => e.notYetOpen);
-                    if (hasOngoing) {
-                      return (
-                        <span className="text-[10px] bg-[#0E623B] border border-[#10B981]/50 text-[#10B981] font-extrabold px-2 py-0.5 rounded-full">
-                          Ongoing Available
-                        </span>
-                      );
-                    }
-                    if (hasUpcoming) {
-                      return (
-                        <span className="text-[10px] bg-amber-950/60 border border-amber-500/40 text-amber-300 font-extrabold px-2 py-0.5 rounded-full">
-                          Upcoming Scheduled
-                        </span>
-                      );
-                    }
-                    return (
-                      <span className="text-[10px] bg-slate-900 border border-slate-700 text-slate-400 font-bold px-2 py-0.5 rounded-full">
-                        Completed
-                      </span>
-                    );
-                  })()}
-                </div>
+          {/* Published Examinations Panel */}
+          <section
+            aria-labelledby="published-exams-heading"
+            className="lg:col-span-7 lg:col-start-6 lg:row-start-1 lg:row-span-2 bg-[#061C13]/95 rounded-2xl sm:rounded-3xl border border-[#D6BF62]/30 shadow-xl p-5 sm:p-6 space-y-4 min-w-0"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#789981]/20">
+              <div className="flex items-center gap-2.5">
+                <BookOpen className="w-4 h-4 text-[#D6BF62] shrink-0" />
+                <h2 id="published-exams-heading" className="text-sm sm:text-base font-extrabold uppercase tracking-wider text-[#F0F9F3]">
+                  Published Examinations ({availableExams.length})
+                </h2>
+              </div>
 
-                <div className="space-y-2.5 max-h-60 overflow-y-auto">
-                  {availableExams.map((pubExam) => {
-                    const startMs = parseLagosExamTime(pubExam.startDate);
-                    const endMs = parseLagosExamTime(pubExam.endDate);
-                    const actualDuration = pubExam.durationMinutes || 5;
-                    let windowMinutes = 40;
-                    if (startMs && endMs && endMs > startMs) {
-                      windowMinutes = Math.round((endMs - startMs) / (60 * 1000));
-                    }
+              {availableExams.length > 0 && (
+                hasOngoingExam ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] bg-[#0E623B]/90 border border-[#10B981]/50 text-[#D1FAE5] font-bold px-2.5 py-1 rounded-lg">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981]" />
+                    Active Available
+                  </span>
+                ) : hasUpcomingExam ? (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] bg-amber-950/70 border border-amber-500/40 text-amber-200 font-bold px-2.5 py-1 rounded-lg">
+                    <Clock className="w-3.5 h-3.5 text-amber-400" />
+                    Upcoming Scheduled
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] bg-slate-900/90 border border-slate-700 text-slate-300 font-bold px-2.5 py-1 rounded-lg">
+                    <Lock className="w-3.5 h-3.5 text-slate-400" />
+                    Completed
+                  </span>
+                )
+              )}
+            </div>
 
-                    // Precise status evaluation based on actual examination schedule
-                    let statusBadgeLabel = 'Ongoing';
-                    let statusBadgeClass = 'bg-[#0E623B] text-[#10B981] border border-[#10B981]/40';
-                    let actionButtonText = 'Access Examination';
+            {loadingAvailable && availableExams.length === 0 ? (
+              <div className="py-12 flex flex-col items-center justify-center gap-3 text-center">
+                <div className="w-8 h-8 border-3 border-[#0E623B] border-t-[#D6BF62] rounded-full animate-spin" />
+                <p className="text-xs text-[#ADCDBA]">Loading published university examinations...</p>
+              </div>
+            ) : availableExams.length === 0 ? (
+              <div className="py-10 px-4 text-center rounded-2xl bg-[#0A2419]/60 border border-[#789981]/20 space-y-2">
+                <GraduationCap className="w-8 h-8 text-[#789981] mx-auto" />
+                <p className="text-sm font-bold text-[#F0F9F3]">No Published Examinations Available</p>
+                <p className="text-xs text-[#ADCDBA] max-w-md mx-auto">
+                  Scheduled course examinations will appear here once published by your lecturer, or enter an Exam ID directly.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3.5 max-h-[540px] overflow-y-auto pr-1">
+                {availableExams.map((pubExam) => {
+                  const isCompleted = pubExam.isClosed;
+                  const isUpcoming = !pubExam.isClosed && pubExam.notYetOpen;
+                  const isOngoing = !isCompleted && !isUpcoming;
 
-                    if (pubExam.isClosed) {
-                      statusBadgeLabel = 'Completed';
-                      statusBadgeClass = 'bg-red-950/60 text-red-300 border border-red-500/40';
-                      actionButtonText = 'Ended';
-                    } else if (pubExam.notYetOpen) {
-                      statusBadgeLabel = 'Upcoming';
-                      statusBadgeClass = 'bg-amber-950/60 text-amber-300 border border-amber-500/40';
-                      actionButtonText = 'Upcoming';
-                    }
+                  let statusLabel = 'Active';
+                  let statusClasses = 'bg-[#0E623B]/90 text-[#D1FAE5] border border-[#10B981]/45';
+                  let StatusIcon = CheckCircle2;
+                  let actionButtonText = 'Access Examination';
 
-                    return (
-                      <div
-                        key={pubExam.id}
-                        onClick={() => {
-                          if (pubExam.isClosed) {
-                            setExamError('This examination has ended. Access is no longer available.');
-                            return;
-                          }
-                          if (pubExam.notYetOpen) {
-                            setExamError('This examination is not open yet.');
-                            return;
-                          }
-                          setExamIdInput(pubExam.id);
-                          loadExamInfo(pubExam.id);
-                        }}
-                        className={`p-3.5 rounded-2xl border ${pubExam.isClosed ? 'border-red-900/40 bg-[#160a0a] opacity-80 cursor-not-allowed' : pubExam.notYetOpen ? 'border-yellow-900/40 bg-[#14120a] cursor-not-allowed' : 'border-[#789981]/30 bg-[#0A2419] hover:border-[#D6BF62] hover:bg-[#0E3324] cursor-pointer'} transition flex flex-col sm:flex-row sm:items-center justify-between gap-3 group`}
-                      >
-                        <div className="flex-1 space-y-2.5">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono font-bold text-xs text-[#D6BF62] bg-[#030515] px-2 py-0.5 rounded border border-[#789981]/30">
-                              {pubExam.courseCode}
-                            </span>
-                            <span className="text-[11px] text-[#ADCDBA] font-semibold">
-                              {pubExam.level || '100 LEVEL'}
-                            </span>
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${statusBadgeClass}`}>
-                              {statusBadgeLabel}
-                            </span>
-                          </div>
+                  if (isCompleted) {
+                    statusLabel = 'Completed';
+                    statusClasses = 'bg-red-950/70 text-red-200 border border-red-500/40';
+                    StatusIcon = Lock;
+                    actionButtonText = 'Ended';
+                  } else if (isUpcoming) {
+                    statusLabel = 'Upcoming';
+                    statusClasses = 'bg-amber-950/70 text-amber-200 border border-amber-500/40';
+                    StatusIcon = Clock;
+                    actionButtonText = 'Upcoming';
+                  }
 
-                          {/* Examination Details Structure */}
-                          <div className="bg-[#030515]/70 rounded-xl p-3.5 border border-[#789981]/25 space-y-2 text-xs">
-                            <div className="pb-1.5 border-b border-[#789981]/20">
-                              <span className="text-xs text-[#ADCDBA] font-medium mr-1.5">Course Title:</span>
-                              <span className="font-extrabold text-[#F0F9F3] text-sm tracking-tight group-hover:text-[#D6BF62] transition inline-block">{pubExam.courseTitle}</span>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-x-4 sm:gap-x-6 gap-y-1 sm:gap-y-1.5 text-xs text-[#ADCDBA]">
-                              <div>
-                                <span className="text-[#ADCDBA]">Course Code: </span>
-                                <span className="font-bold text-[#D6BF62] font-mono">{pubExam.courseCode}</span>
-                              </div>
-                              <div>
-                                <span className="text-[#ADCDBA]">Level: </span>
-                                <span className="font-bold text-[#F0F9F3]">{pubExam.level || '100 LEVEL'}</span>
-                              </div>
-                              <div>
-                                <span className="text-[#ADCDBA]">Department: </span>
-                                <span className="font-medium text-[#F0F9F3]">{pubExam.department}</span>
-                              </div>
-                              <div>
-                                <span className="text-[#ADCDBA]">Lecturer: </span>
-                                <span className="font-medium text-[#F0F9F3]">{pubExam.lecturerName || 'Not specified'}</span>
-                              </div>
-                              <div>
-                                <span className="text-[#ADCDBA]">Questions: </span>
-                                <span className="font-semibold text-[#F0F9F3]">{pubExam.questionsCount}</span>
-                              </div>
-                              <div>
-                                <span className="text-[#ADCDBA]">Date: </span>
-                                <span className="font-medium text-[#F0F9F3]">
-                                  {pubExam.startDate ? formatLagosDate(pubExam.startDate) : 'Not scheduled'}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-[#ADCDBA]">Exam Window: </span>
-                                <span className="font-medium text-[#F0F9F3]">
-                                  {pubExam.startDate && pubExam.endDate
-                                    ? `${formatLagosTime(pubExam.startDate)} – ${formatLagosTime(pubExam.endDate)}`
-                                    : 'N/A'}
-                                </span>
-                              </div>
-                              <div>
-                                <span className="text-[#ADCDBA]">Exam Timer: </span>
-                                <span className="font-bold text-[#10B981]">
-                                  {pubExam.durationMinutes ? `${pubExam.durationMinutes} minutes` : '5 minutes'}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Explicit explanatory notice for candidates */}
-                          <div className="p-2 bg-[#030515]/80 rounded-xl border border-[#789981]/25 text-[10px] text-[#ADCDBA] leading-relaxed">
-                            <span className="text-[#D6BF62] font-bold mr-1">ℹ️ Schedule note:</span>
-                            The access and recovery window accommodates login issues, logout problems and reconnection. It does not represent the time available for answering examination questions.
-                          </div>
+                  return (
+                    <article
+                      key={pubExam.id}
+                      onClick={() => {
+                        if (isCompleted) {
+                          setExamError('This examination has ended. Access is no longer available.');
+                          return;
+                        }
+                        if (isUpcoming) {
+                          setExamError('This examination is not open yet.');
+                          return;
+                        }
+                        setExamIdInput(pubExam.id);
+                        loadExamInfo(pubExam.id);
+                      }}
+                      className={`p-4 rounded-2xl border transition-all duration-150 space-y-3 min-w-0 ${
+                        isCompleted
+                          ? 'border-red-900/40 bg-[#140B0C]/90 opacity-85 cursor-not-allowed'
+                          : isUpcoming
+                          ? 'border-amber-900/40 bg-[#13110A]/95 cursor-not-allowed'
+                          : 'border-[#789981]/30 bg-[#0A2419]/90 hover:border-[#D6BF62] hover:bg-[#0E3324]/90 cursor-pointer group'
+                      }`}
+                    >
+                      {/* Top Metadata & Action Row */}
+                      <div className="flex flex-wrap items-center justify-between gap-2.5">
+                        <div className="flex items-center gap-2 flex-wrap min-w-0">
+                          <span className="font-mono font-bold text-xs text-[#D6BF62] bg-[#030515] px-2.5 py-0.5 rounded-md border border-[#789981]/30">
+                            {pubExam.courseCode}
+                          </span>
+                          <span className="text-[11px] text-[#ADCDBA] font-semibold">
+                            {pubExam.level || '100 LEVEL'}
+                          </span>
+                          <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-md ${statusClasses}`}>
+                            <StatusIcon className="w-3 h-3 shrink-0" />
+                            <span>{statusLabel}</span>
+                          </span>
                         </div>
 
                         <button
                           type="button"
-                          disabled={pubExam.isClosed || pubExam.notYetOpen}
+                          disabled={!isOngoing}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (pubExam.isClosed) {
+                            if (isCompleted) {
                               setExamError('This examination has ended. Access is no longer available.');
                               return;
                             }
-                            if (pubExam.notYetOpen) {
+                            if (isUpcoming) {
                               setExamError('This examination is not open yet.');
                               return;
                             }
                             setExamIdInput(pubExam.id);
                             loadExamInfo(pubExam.id);
                           }}
-                          className={`px-3.5 py-2 ${pubExam.isClosed ? 'bg-red-950/60 border border-red-500/40 text-red-300' : pubExam.notYetOpen ? 'bg-yellow-950/60 border border-yellow-500/40 text-yellow-300' : 'bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62]/60 text-[#F0F9F3]'} text-xs font-bold rounded-xl transition shrink-0`}
+                          className={`px-3.5 py-1.5 text-xs font-bold rounded-xl transition shrink-0 ${
+                            isCompleted
+                              ? 'bg-red-950/60 border border-red-500/40 text-red-300 cursor-not-allowed'
+                              : isUpcoming
+                              ? 'bg-amber-950/60 border border-amber-500/40 text-amber-200 cursor-not-allowed'
+                              : 'bg-[#0E623B] hover:bg-[#127949] border border-[#D6BF62]/70 text-[#F0F9F3] cursor-pointer shadow-sm'
+                          }`}
                         >
                           {actionButtonText}
                         </button>
                       </div>
-                    );
-                  })}
-                </div>
+
+                      {/* Preserved Compact Examination Details Layout */}
+                      <div className="bg-[#030515]/75 rounded-xl p-3.5 border border-[#789981]/20 space-y-2.5 text-xs">
+                        <div className="pb-2 border-b border-[#789981]/20">
+                          <span className="text-xs text-[#ADCDBA] font-medium mr-1.5">Course Title:</span>
+                          <span className="font-extrabold text-[#F0F9F3] text-sm tracking-tight group-hover:text-[#D6BF62] transition-colors inline-block">
+                            {pubExam.courseTitle}
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-xs text-[#ADCDBA]">
+                          <div className="min-w-0 truncate">
+                            <span>Course Code: </span>
+                            <span className="font-bold text-[#D6BF62] font-mono">{pubExam.courseCode}</span>
+                          </div>
+                          <div className="min-w-0 truncate">
+                            <span>Level: </span>
+                            <span className="font-bold text-[#F0F9F3]">{pubExam.level || '100 LEVEL'}</span>
+                          </div>
+                          <div className="min-w-0 truncate">
+                            <span>Department: </span>
+                            <span className="font-medium text-[#F0F9F3]">{pubExam.department}</span>
+                          </div>
+                          <div className="min-w-0 truncate">
+                            <span>Lecturer: </span>
+                            <span className="font-medium text-[#F0F9F3]">{pubExam.lecturerName || 'Not specified'}</span>
+                          </div>
+                          <div>
+                            <span>Questions: </span>
+                            <span className="font-semibold text-[#F0F9F3]">{pubExam.questionsCount}</span>
+                          </div>
+                          <div className="min-w-0 truncate">
+                            <span>Date: </span>
+                            <span className="font-medium text-[#F0F9F3]">
+                              {pubExam.startDate ? formatLagosDate(pubExam.startDate) : 'Not scheduled'}
+                            </span>
+                          </div>
+                          <div className="min-w-0 truncate">
+                            <span>Exam Window: </span>
+                            <span className="font-medium text-[#F0F9F3]">
+                              {pubExam.startDate && pubExam.endDate
+                                ? `${formatLagosTime(pubExam.startDate)} – ${formatLagosTime(pubExam.endDate)}`
+                                : 'N/A'}
+                            </span>
+                          </div>
+                          <div>
+                            <span>Exam Timer: </span>
+                            <span className="font-bold text-[#10B981]">
+                              {pubExam.durationMinutes ? `${pubExam.durationMinutes} minutes` : '5 minutes'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Candidate Access & Recovery Window Note */}
+                      <div className="flex items-start gap-2 text-[11px] text-[#ADCDBA]/90 leading-relaxed pt-0.5">
+                        <Info className="w-3.5 h-3.5 text-[#D6BF62] shrink-0 mt-0.5" />
+                        <span>
+                          The access and recovery window accommodates login issues, logout problems and reconnection. It does not represent the time available for answering examination questions.
+                        </span>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             )}
+          </section>
 
-            {/* Google Calendar Examination Synchronization Section */}
-            <div className="pt-2">
-              <GoogleCalendarSync exams={availableExams} />
-            </div>
-          </div>
+          {/* Visually Separate Examination Reminders Section */}
+          <aside
+            aria-label="Examination Reminders"
+            className="lg:col-span-5 lg:col-start-1 lg:row-start-2 min-w-0"
+          >
+            <GoogleCalendarSync exams={availableExams} />
+          </aside>
         </div>
       </div>
     );

@@ -24,7 +24,8 @@ import {
   X,
   AlertTriangle,
   Eraser,
-  ClipboardCheck
+  ClipboardCheck,
+  LogOut
 } from 'lucide-react';
 import { Exam } from '../../types';
 import { useAuth, isAuthorizedExaminerEmail } from '../../context/AuthContext';
@@ -363,6 +364,16 @@ export const LecturerDashboard: React.FC = () => {
           >
             <Plus className="w-4 h-4 text-[#D6BF62]" />
             <span>Create Examination</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={logout}
+            title="Sign Out"
+            className="flex items-center gap-1.5 px-3.5 py-2.5 bg-[#0A2419] hover:bg-[#2A0808] border border-[#789981]/40 hover:border-red-500/40 text-[#ADCDBA] hover:text-red-200 font-semibold text-sm rounded-xl transition cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Sign Out</span>
           </button>
         </div>
       </div>
